@@ -1,103 +1,100 @@
-import { Card, Input, Button, Space, Select, Typography, Empty, Alert, Divider, Upload } from "antd";
-import { VideoCameraOutlined, UploadOutlined } from "@ant-design/icons";
+import { useState } from "react";
+import { Card, Input, Button, Space, Select, Typography, message } from "antd";
+import { VideoCameraOutlined } from "@ant-design/icons";
+import { useGeneration, EmptyState, LoadingState, ErrorState } from "../_shared";
 
 const { TextArea } = Input;
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
+
+const durations = [
+  { value: "5", label: "5 秒" },
+  { value: "10", label: "10 秒" },
+  { value: "15", label: "15 秒" },
+  { value: "30", label: "30 秒" },
+];
+
+const resolutions = [
+  { value: "720p", label: "720p" },
+  { value: "1080p", label: "1080p" },
+  { value: "4k", label: "4K" },
+];
 
 export default function VideoGenPanel() {
-  const digitalHumans = [
-    { value: "dh_01", label: "小薇 - 女主播风格" },
-    { value: "dh_02", label: "小明 - 男主播风格" },
-    { value: "dh_03", label: "Lily - 英文风格" },
-    { value: "dh_04", label: "阿强 - 方言风格" },
-  ];
+  const [prompt, setPrompt] = useState("");
+  const [duration, setDuration] = useState("5");
+  const [resolution, setResolution] = useState("1080p");
+  const { loading, result, error, generate } = useGeneration<string>();
 
-  const mixModes = [
-    { value: "random", label: "随机混剪" },
-    { value: "sequence", label: "顺序混剪" },
-    { value: "beat", label: "卡点混剪" },
-  ];
+  const handleGenerate = () => {
+    if (!prompt.trim()) {
+      message.warning("请输入视频脚本");
+      return;
+    }
+    void generate("generate_video", { prompt, duration, resolution });
+  };
+
+  const renderResult = () => {
+    if (loading) return <LoadingState tip="AI创作中..." />;
+    if (error)
+      return <ErrorState message={error} onRetry={handleGenerate} />;
+    if (!result)
+      return <EmptyState title="输入提示词开始生成" description="填写脚本与参数后点击生成" />;
+    return (
+      <div style={{ textAlign: "center" }}>
+        <video src={result} controls style={{ maxWidth: "100%", borderRadius: 8 }} />
+      </div>
+    );
+  };
 
   return (
     <div>
       <Card title="视频制造">
-        <Alert
-          message="功能开发中"
-          description="此模块为UI框架预览，视频生成功能将在后续版本中实现。"
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
-
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
-          {/* 脚本输入 */}
           <div>
             <Text strong>视频脚本</Text>
             <TextArea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
               placeholder="输入或粘贴你的视频脚本内容..."
               rows={6}
               style={{ marginTop: 8 }}
             />
           </div>
-
-          {/* 数字人选择 */}
-          <div>
-            <Text strong>数字人选择</Text>
-            <div style={{ marginTop: 8 }}>
+          <Space wrap>
+            <div>
+              <Text style={{ marginRight: 8 }}>时长：</Text>
               <Select
-                defaultValue="dh_01"
-                style={{ width: "100%" }}
-                options={digitalHumans}
-                placeholder="选择数字人形象"
+                value={duration}
+                onChange={setDuration}
+                options={durations}
+                style={{ width: 120 }}
               />
             </div>
-          </div>
-
-          {/* 混剪配置 */}
-          <div>
-            <Text strong>混剪模式</Text>
-            <div style={{ marginTop: 8 }}>
+            <div>
+              <Text style={{ marginRight: 8 }}>分辨率：</Text>
               <Select
-                defaultValue="random"
-                style={{ width: "100%" }}
-                options={mixModes}
-                placeholder="选择混剪模式"
+                value={resolution}
+                onChange={setResolution}
+                options={resolutions}
+                style={{ width: 140 }}
               />
             </div>
-          </div>
-
-          {/* 素材上传 */}
-          <div>
-            <Text strong>素材上传（可选）</Text>
-            <div style={{ marginTop: 8 }}>
-              <Upload.Dragger
-                multiple
-                accept="video/*,image/*"
-                beforeUpload={() => false}
-              >
-                <p className="ant-upload-drag-icon">
-                  <UploadOutlined style={{ fontSize: 32, color: "#1677ff" }} />
-                </p>
-                <p>点击或拖拽文件到此区域上传素材</p>
-                <p style={{ color: "#999", fontSize: 12 }}>支持视频和图片格式</p>
-              </Upload.Dragger>
-            </div>
-          </div>
-
-          <Button type="primary" icon={<VideoCameraOutlined />} size="large" disabled>
-            生成视频（即将上线）
-          </Button>
+            <Button
+              type="primary"
+              icon={<VideoCameraOutlined />}
+              loading={loading}
+              onClick={handleGenerate}
+              size="large"
+            >
+              生成视频
+            </Button>
+          </Space>
         </Space>
       </Card>
 
       <Card title="生成结果" style={{ marginTop: 16 }}>
-        <Empty description="视频生成功能即将上线，敬请期待" />
+        {renderResult()}
       </Card>
-
-      <Divider />
-      <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        视频制造模块将整合数字人播报、智能混剪、多素材合成等功能。
-      </Paragraph>
     </div>
   );
 }

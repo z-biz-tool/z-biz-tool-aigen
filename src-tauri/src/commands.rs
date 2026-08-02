@@ -132,3 +132,72 @@ fn now_str() -> String {
         .unwrap_or(0);
     format!("{}", secs)
 }
+
+/// AI视频生成命令
+#[tauri::command]
+pub async fn generate_video(
+    state: State<'_, AppState>,
+    prompt: String,
+    duration: String,
+    resolution: String,
+) -> Result<String, String> {
+    let config = {
+        let cfg = state.config.lock().map_err(|e| format!("锁配置失败: {}", e))?;
+        cfg.clone()
+    };
+
+    let video_url = ai_client::generate_video_api(&config, &prompt, &duration, &resolution).await?;
+
+    // 添加到历史记录
+    let item = HistoryItem {
+        id: uuid_str(),
+        kind: "video".to_string(),
+        prompt: format!("{} ({} {})", prompt, duration, resolution),
+        result: video_url.clone(),
+        created_at: now_str(),
+    };
+    {
+        let mut history = state.history.lock().map_err(|e| format!("锁历史失败: {}", e))?;
+        history.insert(0, item);
+        if history.len() > 100 {
+            history.truncate(100);
+        }
+    }
+
+    Ok(video_url)
+}
+
+/// PPT生成命令
+#[tauri::command]
+pub async fn generate_ppt(
+    state: State<'_, AppState>,
+    topic: String,
+    template: String,
+    slides: u32,
+    outline: Vec<ai_client::PptOutlineItem>,
+) -> Result<String, String> {
+    let config = {
+        let cfg = state.config.lock().map_err(|e| format!("锁配置失败: {}", e))?;
+        cfg.clone()
+    };
+
+    let file_path = ai_client::generate_ppt_file(&config, &topic, &template, slides, &outline).await?;
+
+    // 添加到历史记录
+    let item = HistoryItem {
+        id: uuid_str(),
+        kind: "ppt".to_string(),
+        prompt: format!("{} ({}页 {}模板)", topic, slides, template),
+        result: file_path.clone(),
+        created_at: now_str(),
+    };
+    {
+        let mut history = state.history.lock().map_err(|e| format!("锁历史失败: {}", e))?;
+        history.insert(0, item);
+        if history.len() > 100 {
+            history.truncate(100);
+        }
+    }
+
+    Ok(file_path)
+}

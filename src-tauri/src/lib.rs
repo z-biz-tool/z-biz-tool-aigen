@@ -14,6 +14,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::generate_image,
             commands::generate_text,
+            commands::generate_video,
+            commands::generate_ppt,
             commands::get_history,
             commands::save_api_config,
             commands::load_api_config,

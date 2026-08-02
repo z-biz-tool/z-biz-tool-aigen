@@ -8,7 +8,7 @@ export interface ApiConfig {
 
 export interface HistoryItem {
   id: string;
-  kind: "image" | "text";
+  kind: string;
   prompt: string;
   result: string;
   created_at: string;

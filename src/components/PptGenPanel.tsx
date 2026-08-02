@@ -1,21 +1,10 @@
 import { useState } from "react";
-import {
-  Card,
-  Input,
-  Button,
-  Space,
-  Select,
-  Typography,
-  Empty,
-  Alert,
-  Divider,
-  List,
-  InputNumber,
-} from "antd";
-import { FilePptOutlined, PlusOutlined, DeleteOutlined } from "@ant-design/icons";
+import { Card, Input, Button, Space, Select, Typography, List, InputNumber, message } from "antd";
+import { FilePptOutlined, PlusOutlined, DeleteOutlined, DownloadOutlined } from "@ant-design/icons";
+import { useGeneration, EmptyState, LoadingState, ErrorState } from "../_shared";
 
 const { TextArea } = Input;
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 interface OutlineItem {
   id: number;
@@ -23,18 +12,19 @@ interface OutlineItem {
   content: string;
 }
 
+const templates = [
+  { value: "business", label: "商务简约" },
+  { value: "tech", label: "科技蓝" },
+  { value: "creative", label: "创意彩色" },
+  { value: "academic", label: "学术严谨" },
+];
+
 export default function PptGenPanel() {
   const [topic, setTopic] = useState("");
-  const [outline, setOutline] = useState<OutlineItem[]>([
-    { id: 1, title: "", content: "" },
-  ]);
-
-  const templates = [
-    { value: "business", label: "商务简约" },
-    { value: "tech", label: "科技蓝" },
-    { value: "creative", label: "创意彩色" },
-    { value: "academic", label: "学术严谨" },
-  ];
+  const [template, setTemplate] = useState("business");
+  const [slides, setSlides] = useState(10);
+  const [outline, setOutline] = useState<OutlineItem[]>([{ id: 1, title: "", content: "" }]);
+  const { loading, result, error, generate } = useGeneration<string>();
 
   const addOutlineItem = () => {
     setOutline([...outline, { id: Date.now(), title: "", content: "" }]);
@@ -48,19 +38,33 @@ export default function PptGenPanel() {
     setOutline(outline.map((item) => (item.id === id ? { ...item, [field]: value } : item)));
   };
 
+  const handleGenerate = () => {
+    if (!topic.trim()) {
+      message.warning("请输入PPT主题");
+      return;
+    }
+    void generate("generate_ppt", { topic, template, slides, outline });
+  };
+
+  const renderResult = () => {
+    if (loading) return <LoadingState tip="AI创作中..." />;
+    if (error)
+      return <ErrorState message={error} onRetry={handleGenerate} />;
+    if (!result)
+      return <EmptyState title="输入提示词开始生成" description="填写主题与大纲后点击生成" />;
+    return (
+      <div style={{ textAlign: "center", padding: 24 }}>
+        <Button type="primary" icon={<DownloadOutlined />} href={result} target="_blank">
+          下载PPT文件
+        </Button>
+      </div>
+    );
+  };
+
   return (
     <div>
       <Card title="PPT生成">
-        <Alert
-          message="功能开发中"
-          description="此模块为UI框架预览，PPT生成功能将在后续版本中实现。"
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
-
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
-          {/* 主题输入 */}
           <div>
             <Text strong>PPT主题</Text>
             <Input
@@ -70,29 +74,30 @@ export default function PptGenPanel() {
               style={{ marginTop: 8 }}
             />
           </div>
-
-          {/* 模板选择 */}
-          <div>
-            <Text strong>模板风格</Text>
-            <div style={{ marginTop: 8 }}>
+          <Space wrap>
+            <div>
+              <Text style={{ marginRight: 8 }}>模板：</Text>
               <Select
-                defaultValue="business"
-                style={{ width: "100%" }}
+                value={template}
+                onChange={setTemplate}
                 options={templates}
-                placeholder="选择PPT模板"
+                style={{ width: 160 }}
               />
             </div>
-          </div>
-
-          {/* 幻灯片数量 */}
-          <div>
-            <Space>
-              <Text strong>幻灯片数量：</Text>
-              <InputNumber min={1} max={50} defaultValue={10} />
-            </Space>
-          </div>
-
-          {/* 大纲编辑 */}
+            <div>
+              <Text style={{ marginRight: 8 }}>页数：</Text>
+              <InputNumber min={1} max={50} value={slides} onChange={(v) => setSlides(v || 10)} />
+            </div>
+            <Button
+              type="primary"
+              icon={<FilePptOutlined />}
+              loading={loading}
+              onClick={handleGenerate}
+              size="large"
+            >
+              生成PPT
+            </Button>
+          </Space>
           <div>
             <Space style={{ width: "100%", justifyContent: "space-between" }}>
               <Text strong>大纲编辑</Text>
@@ -136,21 +141,12 @@ export default function PptGenPanel() {
               />
             </div>
           </div>
-
-          <Button type="primary" icon={<FilePptOutlined />} size="large" disabled>
-            生成PPT（即将上线）
-          </Button>
         </Space>
       </Card>
 
       <Card title="生成结果" style={{ marginTop: 16 }}>
-        <Empty description="PPT生成功能即将上线，敬请期待" />
+        {renderResult()}
       </Card>
-
-      <Divider />
-      <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        PPT生成模块将支持主题输入、模板选择、大纲编辑，自动生成可下载的PPT文件。
-      </Paragraph>
     </div>
   );
 }

@@ -6,61 +6,52 @@ import {
   Row,
   Col,
   Space,
+  Select,
   InputNumber,
   Typography,
   message,
-  Empty,
-  Spin,
-  Divider,
-  Tag,
 } from "antd";
-import {
-  ThunderboltOutlined,
-  DownloadOutlined,
-  CopyOutlined,
-  SettingOutlined,
-} from "@ant-design/icons";
-import { useAiStore } from "../stores/aiStore";
+import { ThunderboltOutlined, DownloadOutlined, CopyOutlined } from "@ant-design/icons";
+import { useGeneration, EmptyState, LoadingState, ErrorState } from "../_shared";
 
 const { TextArea } = Input;
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
+
+const models = [
+  { value: "dall-e-3", label: "DALL-E 3" },
+  { value: "dall-e-2", label: "DALL-E 2" },
+  { value: "stable-diffusion-xl", label: "Stable Diffusion XL" },
+  { value: "sd-turbo", label: "SD Turbo" },
+];
+
+const sizes = [
+  { value: "1024x1024", label: "1024 x 1024（正方形）" },
+  { value: "1792x1024", label: "1792 x 1024（横图）" },
+  { value: "1024x1792", label: "1024 x 1792（竖图）" },
+  { value: "512x512", label: "512 x 512（小图）" },
+];
 
 export default function ImageGenPanel() {
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(1);
-  const [results, setResults] = useState<string[]>([]);
-  const [showConfig, setShowConfig] = useState(false);
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("dall-e-3");
+  const [size, setSize] = useState("1024x1024");
+  const { loading, result, error, generate } = useGeneration<string[]>();
 
-  const { generateImage, imageLoading, baseUrl: storedBaseUrl, apiKey: storedApiKey, saveConfig } =
-    useAiStore();
-
-  const handleGenerate = async () => {
+  const handleGenerate = () => {
     if (!prompt.trim()) {
       message.warning("请输入提示词");
       return;
     }
-    try {
-      const urls = await generateImage(prompt, count);
-      setResults(urls);
-      message.success(`成功生成 ${urls.length} 张图片`);
-    } catch (e: any) {
-      message.error(`生成失败: ${e}`);
-    }
+    void generate("generate_image", { prompt, count, model, size });
   };
 
-  const handleDownload = async (url: string) => {
-    try {
-      // 通过浏览器打开图片URL（支持下载）
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `image-${Date.now()}.png`;
-      a.target = "_blank";
-      a.click();
-    } catch {
-      message.error("下载失败");
-    }
+  const handleDownload = (url: string) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `image-${Date.now()}.png`;
+    a.target = "_blank";
+    a.click();
   };
 
   const handleCopyUrl = (url: string) => {
@@ -68,27 +59,38 @@ export default function ImageGenPanel() {
     message.success("已复制图片URL");
   };
 
-  const handleSaveConfig = async () => {
-    try {
-      await saveConfig(baseUrl, apiKey);
-      message.success("配置已保存");
-      setShowConfig(false);
-    } catch (e: any) {
-      message.error(`保存配置失败: ${e}`);
-    }
-  };
-
-  const openConfig = () => {
-    setBaseUrl(storedBaseUrl);
-    setApiKey(storedApiKey);
-    setShowConfig(true);
+  const renderResult = () => {
+    if (loading) return <LoadingState tip="AI创作中..." />;
+    if (error) return <ErrorState message={error} onRetry={handleGenerate} />;
+    if (!result || result.length === 0)
+      return <EmptyState title="输入提示词开始生成" description="填写提示词与参数后点击生成" />;
+    return (
+      <Row gutter={[16, 16]}>
+        {result.map((url, idx) => (
+          <Col key={idx} xs={24} sm={12} md={8} lg={6}>
+            <Card
+              size="small"
+              cover={
+                <img
+                  src={url}
+                  alt={`生成图片 ${idx + 1}`}
+                  style={{ width: "100%", objectFit: "cover", borderRadius: 4 }}
+                />
+              }
+              actions={[
+                <DownloadOutlined key="download" onClick={() => handleDownload(url)} />,
+                <CopyOutlined key="copy" onClick={() => handleCopyUrl(url)} />,
+              ]}
+            />
+          </Col>
+        ))}
+      </Row>
+    );
   };
 
   return (
     <div>
-      <Card title="AI图片生成" extra={
-        <Button icon={<SettingOutlined />} onClick={openConfig}>API配置</Button>
-      }>
+      <Card title="AI图片生成">
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <div>
             <Text strong>提示词</Text>
@@ -100,14 +102,23 @@ export default function ImageGenPanel() {
               style={{ marginTop: 8 }}
             />
           </div>
-
-          <Space>
-            <Text>生成数量：</Text>
-            <InputNumber min={1} max={10} value={count} onChange={(v) => setCount(v || 1)} />
+          <Space wrap>
+            <div>
+              <Text style={{ marginRight: 8 }}>模型：</Text>
+              <Select value={model} onChange={setModel} options={models} style={{ width: 180 }} />
+            </div>
+            <div>
+              <Text style={{ marginRight: 8 }}>尺寸：</Text>
+              <Select value={size} onChange={setSize} options={sizes} style={{ width: 200 }} />
+            </div>
+            <div>
+              <Text style={{ marginRight: 8 }}>数量：</Text>
+              <InputNumber min={1} max={10} value={count} onChange={(v) => setCount(v || 1)} />
+            </div>
             <Button
               type="primary"
               icon={<ThunderboltOutlined />}
-              loading={imageLoading}
+              loading={loading}
               onClick={handleGenerate}
               size="large"
             >
@@ -117,67 +128,9 @@ export default function ImageGenPanel() {
         </Space>
       </Card>
 
-      {showConfig && (
-        <Card title="API配置" style={{ marginTop: 16 }}>
-          <Space direction="vertical" style={{ width: "100%" }} size="middle">
-            <div>
-              <Text strong>Base URL</Text>
-              <Input
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://api.minimax.chat/v1"
-                style={{ marginTop: 8 }}
-              />
-            </div>
-            <div>
-              <Text strong>API Key</Text>
-              <Input.Password
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="输入你的API密钥"
-                style={{ marginTop: 8 }}
-              />
-            </div>
-            <Space>
-              <Button type="primary" onClick={handleSaveConfig}>保存配置</Button>
-              <Button onClick={() => setShowConfig(false)}>取消</Button>
-            </Space>
-          </Space>
-        </Card>
-      )}
-
       <Card title="生成结果" style={{ marginTop: 16 }}>
-        {imageLoading && results.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px" }}>
-            <Spin size="large" tip="正在生成图片..." />
-          </div>
-        ) : results.length === 0 ? (
-          <Empty description="还没有生成图片，输入提示词开始创作" />
-        ) : (
-          <Row gutter={[16, 16]}>
-            {results.map((url, idx) => (
-              <Col key={idx} xs={24} sm={12} md={8} lg={6}>
-                <Card
-                  size="small"
-                  cover={<img src={url} alt={`生成图片 ${idx + 1}`} style={{ width: "100%", objectFit: "cover", borderRadius: 4 }} />}
-                  actions={[
-                    <DownloadOutlined key="download" onClick={() => handleDownload(url)} />,
-                    <CopyOutlined key="copy" onClick={() => handleCopyUrl(url)} />,
-                  ]}
-                >
-                  <Tag color="blue">#{idx + 1}</Tag>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        )}
+        {renderResult()}
       </Card>
-
-      <Divider />
-      <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        支持OpenAI兼容格式的图片生成API，通过Base URL和API Key配置连接。
-        图片尺寸默认1024x1024。
-      </Paragraph>
     </div>
   );
 }
