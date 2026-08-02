@@ -1,23 +1,36 @@
 # z-biz-tool-aigen
 
-> AI内容制造工厂 — AI图片/视频/PPT/音乐/语音生成
+AI内容制造工厂 - 合并 creator-graph + kb-cos + create-ppt-web 的一体化桌面应用
 
-## 合并来源
+## 功能模块
 
-| 原项目 | 模块 |
-|--------|------|
-| z-biz-tool-creator-graph | AI图片生成 |
-| z-biz-tool-kb-cos | 短视频制造（爆款→改写→数字人→混剪→发布） |
-| z-biz-tool-create-ppt-web | AI生成PPT |
-
-## 功能
-
-- AI图片生成（批量/多模型/多风格）
-- AI视频制造（爆款→改写→数字人→混剪→多平台发布）
-- AI生成PPT（模板/导出）
-- AI音乐生成（可扩展）
-- AI语音合成/克隆（可扩展）
+- **图片生成**: AI图片生成，支持批量生成、结果网格展示、下载
+- **视频制造**: 数字人播报 + 智能混剪（UI框架，功能开发中）
+- **PPT生成**: 主题输入 + 模板选择 + 大纲编辑（UI框架，功能开发中）
+- **文本写作**: AI文本生成，支持多种写作类型
 
 ## 技术栈
 
-- Electron + Python + Java（多模块）
+- Tauri 2.0 (Rust后端)
+- Vite + React 19
+- Ant Design 6
+- Zustand 状态管理
+- reqwest (AI API调用)
+
+## 开发
+
+```bash
+npm install
+npm run tauri dev
+```
+
+## 构建
+
+```bash
+npm run tauri build
+```
+
+## API配置
+
+应用内置API配置管理，支持OpenAI兼容格式的图片生成和文本生成API。
+配置保存在 `~/.z-biz-tool-aigen/config.json`。
