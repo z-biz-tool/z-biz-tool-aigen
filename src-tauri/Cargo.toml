@@ -1,5 +1,6 @@
 [package]
-name = "z-biz-tool-aigen"version = "0.2.0"
+name = "z-biz-tool-aigen"
+version = "0.2.0"
 description = "AI内容制造工厂"
 edition = "2021"
 
