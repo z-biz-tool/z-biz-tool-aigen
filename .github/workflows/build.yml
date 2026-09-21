@@ -78,6 +78,7 @@ jobs:
           npm install --registry=https://registry.npmmirror.com --omit=dev
 
       - name: Install npm dependencies (after shared sibling exists)
+        shell: bash
         run: |
           rm -rf node_modules
           npm install --registry=https://registry.npmmirror.com
