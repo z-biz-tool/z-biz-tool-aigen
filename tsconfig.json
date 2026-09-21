@@ -18,8 +18,7 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "z-biz-tool-shared/*": ["../z-biz-tool-shared/src/*"]
+      "@/*": ["src/*"]
     }
   },
   "include": ["src"]
