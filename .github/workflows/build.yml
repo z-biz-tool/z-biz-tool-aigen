@@ -60,6 +60,20 @@ jobs:
       - name: Install npm dependencies
         run: npm install --registry=https://registry.npmmirror.com
 
+      # 本仓用 file:../z-biz-tool-shared 作依赖，CI 上每个仓独立 checkout，
+      # 需要先把 shared 拉到 ../z-biz-tool-shared 才能让 npm install 找到。
+      - name: Checkout z-biz-tool-shared (sibling dep)
+        uses: actions/checkout@v4
+        with:
+          repository: z-biz-tool/z-biz-tool-shared
+          ref: main
+          path: ../z-biz-tool-shared
+        # 先安装依赖（这一步会失败但保留 node_modules），再补 shared 让 npm install --force 链接上
+        continue-on-error: true
+
+      - name: Re-install npm with shared sibling
+        run: npm install --registry=https://registry.npmmirror.com --force
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
