@@ -10,18 +10,23 @@ import {
   InputNumber,
   Typography,
   message,
+  Tag,
 } from "antd";
-import { ThunderboltOutlined, DownloadOutlined, CopyOutlined } from "@ant-design/icons";
+import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined } from "@ant-design/icons";
 import { useGeneration, EmptyState, LoadingState, ErrorState } from "../_shared";
 
 const { TextArea } = Input;
 const { Text } = Typography;
 
+// 渐变色定义
+const brandGradient = "linear-gradient(135deg, #667eea 0%, #764ba2 100%)";
+const cardBgGradient = "linear-gradient(135deg, rgba(102,126,234,0.04) 0%, rgba(118,75,162,0.04) 100%)";
+
 const models = [
-  { value: "dall-e-3", label: "DALL-E 3" },
+  { value: "dall-e-3", label: "DALL-E 3 (最新)" },
   { value: "dall-e-2", label: "DALL-E 2" },
   { value: "stable-diffusion-xl", label: "Stable Diffusion XL" },
-  { value: "sd-turbo", label: "SD Turbo" },
+  { value: "sd-turbo", label: "SD Turbo (快速)" },
 ];
 
 const sizes = [
@@ -56,32 +61,47 @@ export default function ImageGenPanel() {
 
   const handleCopyUrl = (url: string) => {
     navigator.clipboard.writeText(url);
-    message.success("已复制图片URL");
+    message.success("已复制图片 URL");
   };
 
   const renderResult = () => {
-    if (loading) return <LoadingState tip="AI创作中..." />;
+    if (loading) return <LoadingState tip="AI 正在绘制中..." />;
     if (error) return <ErrorState message={error} onRetry={handleGenerate} />;
     if (!result || result.length === 0)
-      return <EmptyState title="输入提示词开始生成" description="填写提示词与参数后点击生成" />;
+      return (
+        <EmptyState
+          title="准备创作你的第一张 AI 图片"
+          description="在上方输入描述，AI 将为你生成精美图像"
+        />
+      );
     return (
-      <Row gutter={[16, 16]}>
+      <Row gutter={[20, 20]}>
         {result.map((url, idx) => (
           <Col key={idx} xs={24} sm={12} md={8} lg={6}>
             <Card
-              size="small"
+              hoverable
+              style={{ borderRadius: 12, overflow: "hidden" }}
               cover={
                 <img
                   src={url}
                   alt={`生成图片 ${idx + 1}`}
-                  style={{ width: "100%", objectFit: "cover", borderRadius: 4 }}
+                  style={{ width: "100%", height: 200, objectFit: "cover" }}
                 />
               }
               actions={[
-                <DownloadOutlined key="download" onClick={() => handleDownload(url)} />,
-                <CopyOutlined key="copy" onClick={() => handleCopyUrl(url)} />,
+                <Button key="download" type="primary" icon={<DownloadOutlined />} onClick={() => handleDownload(url)} />,
+                <Button key="copy" icon={<CopyOutlined />} onClick={() => handleCopyUrl(url)} />,
               ]}
-            />
+            >
+              <Card.Meta
+                description={
+                  <Space direction="vertical" style={{ width: "100%" }} size={4}>
+                    <Tag color="purple" icon={<PictureOutlined />}>{models.find(m => m.value === model)?.label}</Tag>
+                    <Tag color="blue">{sizes.find(s => s.value === size)?.label.split("（")[0]}</Tag>
+                  </Space>
+                }
+              />
+            </Card>
           </Col>
         ))}
       </Row>
@@ -89,38 +109,109 @@ export default function ImageGenPanel() {
   };
 
   return (
-    <div>
-      <Card title="AI图片生成">
-        <Space direction="vertical" style={{ width: "100%" }} size="middle">
-          <div>
-            <Text strong>提示词</Text>
+    <div style={{ maxWidth: 900, margin: "0 auto" }}>
+      <Card
+        title={
+          <Space>
+            <PictureOutlined style={{ color: "#667eea", fontSize: 18 }} />
+            <span style={{ fontWeight: 600, background: brandGradient, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>AI 图片生成</span>
+          </Space>
+        }
+        style={{ 
+          borderRadius: 20, 
+          boxShadow: "0 8px 24px rgba(102,126,234,0.15)",
+          background: cardBgGradient
+        }}
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size="large">
+          <div style={{ padding: '4px' }}>
+            <Text strong style={{ display: "block", marginBottom: 10, color: "#1a1a2e", fontWeight: 600 }}>
+              🎨 提示词
+            </Text>
             <TextArea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="描述你想要生成的图片，例如：一只可爱的橘猫坐在窗台上，阳光温暖，水彩画风格"
-              rows={4}
-              style={{ marginTop: 8 }}
+              rows={5}
+              style={{
+                marginTop: 8,
+                borderRadius: 12,
+                border: "1px solid rgba(102,126,234,0.2)",
+                resize: "vertical",
+                transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                background: '#ffffff'
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.boxShadow = '0 2px 8px rgba(102,126,234,0.15)';
+                e.currentTarget.style.border = "1px solid rgba(102,126,234,0.4)";
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.boxShadow = 'none';
+                e.currentTarget.style.border = "1px solid rgba(102,126,234,0.2)";
+              }}
             />
+            <div style={{ marginTop: 10, fontSize: 13, color: "#666666", background: "rgba(102,126,234,0.04)", padding: '8px 12px', borderRadius: 8 }}>
+              💡 提示：越详细的描述，生成的图片越精美
+            </div>
           </div>
-          <Space wrap>
+          <Space wrap style={{ padding: '4px' }}>
             <div>
-              <Text style={{ marginRight: 8 }}>模型：</Text>
-              <Select value={model} onChange={setModel} options={models} style={{ width: 180 }} />
+              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>模型：</Text>
+              <Select
+                value={model}
+                onChange={setModel}
+                options={models}
+                style={{ width: 200, borderRadius: 10 }}
+                size="large"
+                dropdownStyle={{ borderRadius: 10 }}
+              />
             </div>
             <div>
-              <Text style={{ marginRight: 8 }}>尺寸：</Text>
-              <Select value={size} onChange={setSize} options={sizes} style={{ width: 200 }} />
+              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>尺寸：</Text>
+              <Select
+                value={size}
+                onChange={setSize}
+                options={sizes}
+                style={{ width: 200, borderRadius: 10 }}
+                size="large"
+                dropdownStyle={{ borderRadius: 10 }}
+              />
             </div>
             <div>
-              <Text style={{ marginRight: 8 }}>数量：</Text>
-              <InputNumber min={1} max={10} value={count} onChange={(v) => setCount(v || 1)} />
+              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>数量：</Text>
+              <InputNumber
+                min={1}
+                max={10}
+                value={count}
+                onChange={(v) => setCount(v || 1)}
+                style={{ width: 100, borderRadius: 10 }}
+                size="large"
+              />
             </div>
             <Button
               type="primary"
+              size="large"
               icon={<ThunderboltOutlined />}
               loading={loading}
               onClick={handleGenerate}
-              size="large"
+              style={{
+                background: brandGradient,
+                border: "none",
+                minWidth: 160,
+                height: 44,
+                borderRadius: 12,
+                fontWeight: 600,
+                boxShadow: "0 4px 12px rgba(102,126,234,0.3)",
+                transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.transform = "scale(1.05)";
+                (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 24px rgba(102,126,234,0.4)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.transform = "scale(1)";
+                (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 12px rgba(102,126,234,0.3)";
+              }}
             >
               生成图片
             </Button>
@@ -128,7 +219,20 @@ export default function ImageGenPanel() {
         </Space>
       </Card>
 
-      <Card title="生成结果" style={{ marginTop: 16 }}>
+      <Card
+        title={
+          <Space>
+            <span style={{ fontSize: 16 }}>🖼️</span>
+            <span style={{ fontWeight: 600, color: "#1a1a2e" }}>生成结果</span>
+          </Space>
+        }
+        style={{ 
+          marginTop: 24, 
+          borderRadius: 20, 
+          boxShadow: "0 8px 24px rgba(102,126,234,0.15)",
+          background: cardBgGradient
+        }}
+      >
         {renderResult()}
       </Card>
     </div>

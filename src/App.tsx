@@ -10,7 +10,7 @@ import {
 } from "@ant-design/icons";
 import zhCN from "antd/locale/zh_CN";
 import { AppShell, ThemeProvider } from "./_shared";
-import { useAiStore } from "./stores/aiStore";
+import { useAIGenStore } from "./stores/aiStore";
 import ImageGenPanel from "./components/ImageGenPanel";
 import VideoGenPanel from "./components/VideoGenPanel";
 import PptGenPanel from "./components/PptGenPanel";
@@ -26,11 +26,11 @@ export default function App() {
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
 
-  const loadConfig = useAiStore((s) => s.loadConfig);
-  const loadHistory = useAiStore((s) => s.loadHistory);
-  const storedBaseUrl = useAiStore((s) => s.baseUrl);
-  const storedApiKey = useAiStore((s) => s.apiKey);
-  const saveConfig = useAiStore((s) => s.saveConfig);
+  const loadConfig = useAIGenStore((s) => s.loadConfig);
+  const loadHistory = useAIGenStore((s) => s.loadHistory);
+  const storedBaseUrl = useAIGenStore((s) => s.baseUrl);
+  const storedApiKey = useAIGenStore((s) => s.apiKey);
+  const saveConfig = useAIGenStore((s) => s.saveConfig);
 
   useEffect(() => {
     loadConfig();
