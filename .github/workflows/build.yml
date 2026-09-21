@@ -57,12 +57,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev
 
-      - name: Checkout z-biz-tool-shared (sibling dep)
-        uses: actions/checkout@v4
-        with:
-          repository: z-biz-tool/z-biz-tool-shared
-          ref: main
-          path: ../z-biz-tool-shared
+      # 本仓用 file:../z-biz-tool-shared 作依赖，CI 上每个仓独立 checkout，
+      # 需要把 shared 拉到 ../z-biz-tool-shared 才能让 npm install 找到。
+      # actions/checkout 的 path 校验要求目标路径必须在 GITHUB_WORKSPACE
+      # 内，否则报 "Repository path … is not under …"。这里用 git 命令
+      # 直接 clone 到 $GITHUB_WORKSPACE 的父目录，绕过该校验。
+      - name: Clone z-biz-tool-shared (sibling dep)
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/../z-biz-tool-shared"
+          git clone --depth 1 --branch main https://github.com/z-biz-tool/z-biz-tool-shared.git "$GITHUB_WORKSPACE/../z-biz-tool-shared"
 
       - name: Install npm dependencies (after shared sibling exists)
         run: |
