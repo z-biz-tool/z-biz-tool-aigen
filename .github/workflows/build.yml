@@ -68,6 +68,15 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/../z-biz-tool-shared"
           git clone --depth 1 --branch main https://github.com/z-biz-tool/z-biz-tool-shared.git "$GITHUB_WORKSPACE/../z-biz-tool-shared"
 
+      # shared 仓的源码里会 import react/antd/zustand 等，本仓 tsc 解析
+      # 这些文件时也会用到类型。shared 自己有 package.json 声明依赖，
+      # 但作为 file: 依赖不会自动安装它的子依赖，所以这里跑一遍 install。
+      - name: Install shared sibling deps
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/../z-biz-tool-shared"
+          npm install --registry=https://registry.npmmirror.com --omit=dev
+
       - name: Install npm dependencies (after shared sibling exists)
         run: |
           rm -rf node_modules
