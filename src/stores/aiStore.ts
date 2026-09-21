@@ -3,7 +3,7 @@
  */
 
 import { create } from 'zustand';
-import { useAIManager } from 'z-biz-tool-shared/ai';
+import { useAIManager } from 'z-biz-tool-shared';
 
 export interface GenerationHistoryItem {
   id: string;
