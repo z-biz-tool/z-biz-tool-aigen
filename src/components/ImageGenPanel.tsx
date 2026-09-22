@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Card,
   Input,
@@ -12,8 +12,11 @@ import {
   message,
   Tag,
 } from "antd";
-import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined } from "@ant-design/icons";
-import { useGeneration, EmptyState, LoadingState, ErrorState } from "../_shared";
+import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined, CloseCircleOutlined } from "@ant-design/icons";
+import { EmptyState, LoadingState, ErrorState } from "../_shared";
+import { exportResult, EXPORT_FILTERS, stamp } from "../_shared/export";
+import { useTask, usePrompt } from "../stores/generationStore";
+import { useAIGenStore, useModelOptions } from "../stores/aiStore";
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -37,27 +40,37 @@ const sizes = [
 ];
 
 export default function ImageGenPanel() {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = usePrompt("image");
   const [count, setCount] = useState(1);
   const [model, setModel] = useState("dall-e-3");
   const [size, setSize] = useState("1024x1024");
-  const { loading, result, error, generate } = useGeneration<string[]>();
+  const { loading, result, error, submit, cancel } = useTask("image");
+  const openConfig = useAIGenStore((s) => s.openConfig);
+  const { options: providerModels, providerName } = useModelOptions("image");
+  const modelOptions = providerModels ?? models;
+  const images = (result as string[] | null) ?? [];
+
+  useEffect(() => {
+    if (providerModels && !providerModels.some((m) => m.value === model)) {
+      setModel(providerModels[0].value);
+    }
+  }, [providerModels, model]);
 
   const handleGenerate = () => {
     if (!prompt.trim()) {
       message.warning("请输入提示词");
       return;
     }
-    void generate("generate_image", { prompt, count, model, size });
+    void submit("image", "generate_image", { prompt, count, model, size });
   };
 
-  const handleDownload = (url: string) => {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `image-${Date.now()}.png`;
-    a.target = "_blank";
-    a.click();
-  };
+  // H2：不再依赖 `<a download>` 在 webview 里的不确定行为，改走 dialog + Rust 落盘
+  const handleExport = (url: string, idx: number) =>
+    void exportResult({
+      defaultName: `aigen-image-${stamp()}-${idx + 1}.png`,
+      filters: EXPORT_FILTERS.image,
+      text: url,
+    });
 
   const handleCopyUrl = (url: string) => {
     navigator.clipboard.writeText(url);
@@ -65,9 +78,9 @@ export default function ImageGenPanel() {
   };
 
   const renderResult = () => {
-    if (loading) return <LoadingState tip="AI 正在绘制中..." />;
-    if (error) return <ErrorState message={error} onRetry={handleGenerate} />;
-    if (!result || result.length === 0)
+    if (loading) return <LoadingState tip="AI 正在绘制中..." onCancel={cancel} />;
+    if (error) return <ErrorState error={error} onRetry={handleGenerate} onOpenConfig={openConfig} />;
+    if (!images.length)
       return (
         <EmptyState
           title="准备创作你的第一张 AI 图片"
@@ -76,7 +89,7 @@ export default function ImageGenPanel() {
       );
     return (
       <Row gutter={[20, 20]}>
-        {result.map((url, idx) => (
+        {images.map((url, idx) => (
           <Col key={idx} xs={24} sm={12} md={8} lg={6}>
             <Card
               hoverable
@@ -89,14 +102,16 @@ export default function ImageGenPanel() {
                 />
               }
               actions={[
-                <Button key="download" type="primary" icon={<DownloadOutlined />} onClick={() => handleDownload(url)} />,
+                <Button key="download" type="primary" icon={<DownloadOutlined />} onClick={() => void handleExport(url, idx)} />,
                 <Button key="copy" icon={<CopyOutlined />} onClick={() => handleCopyUrl(url)} />,
               ]}
             >
               <Card.Meta
                 description={
                   <Space direction="vertical" style={{ width: "100%" }} size={4}>
-                    <Tag color="purple" icon={<PictureOutlined />}>{models.find(m => m.value === model)?.label}</Tag>
+                    <Tag color="purple" icon={<PictureOutlined />}>
+                      {modelOptions.find((m) => m.value === model)?.label ?? model}
+                    </Tag>
                     <Tag color="blue">{sizes.find(s => s.value === size)?.label.split("（")[0]}</Tag>
                   </Space>
                 }
@@ -156,11 +171,13 @@ export default function ImageGenPanel() {
           </div>
           <Space wrap style={{ padding: '4px' }}>
             <div>
-              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>模型：</Text>
+              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>
+                模型{providerName ? `（${providerName}）` : ""}：
+              </Text>
               <Select
                 value={model}
                 onChange={setModel}
-                options={models}
+                options={modelOptions}
                 style={{ width: 200, borderRadius: 10 }}
                 size="large"
                 dropdownStyle={{ borderRadius: 10 }}
@@ -188,33 +205,44 @@ export default function ImageGenPanel() {
                 size="large"
               />
             </div>
-            <Button
-              type="primary"
-              size="large"
-              icon={<ThunderboltOutlined />}
-              loading={loading}
-              onClick={handleGenerate}
-              style={{
-                background: brandGradient,
-                border: "none",
-                minWidth: 160,
-                height: 44,
-                borderRadius: 12,
-                fontWeight: 600,
-                boxShadow: "0 4px 12px rgba(102,126,234,0.3)",
-                transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.transform = "scale(1.05)";
-                (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 24px rgba(102,126,234,0.4)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.transform = "scale(1)";
-                (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 12px rgba(102,126,234,0.3)";
-              }}
-            >
-              生成图片
-            </Button>
+            {loading ? (
+              <Button
+                danger
+                size="large"
+                icon={<CloseCircleOutlined />}
+                onClick={cancel}
+                style={{ minWidth: 160, height: 44, borderRadius: 12, fontWeight: 600 }}
+              >
+                取消生成
+              </Button>
+            ) : (
+              <Button
+                type="primary"
+                size="large"
+                icon={<ThunderboltOutlined />}
+                onClick={handleGenerate}
+                style={{
+                  background: brandGradient,
+                  border: "none",
+                  minWidth: 160,
+                  height: 44,
+                  borderRadius: 12,
+                  fontWeight: 600,
+                  boxShadow: "0 4px 12px rgba(102,126,234,0.3)",
+                  transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.transform = "scale(1.05)";
+                  (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 24px rgba(102,126,234,0.4)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.transform = "scale(1)";
+                  (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 12px rgba(102,126,234,0.3)";
+                }}
+              >
+                生成图片
+              </Button>
+            )}
           </Space>
         </Space>
       </Card>

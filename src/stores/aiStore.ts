@@ -1,220 +1,228 @@
 /**
- * AI 生成 store - 使用统一的 AI 中台
+ * AI 生成应用态：服务商配置与历史。
+ *
+ * - 密钥**不再**出现在前端：store 只保存 `has_key` / `key_masked`（T-A2/A3/A4）
+ * - 不写 localStorage：配置唯一来源是 Rust 侧加密存储（04 §2）
+ * - 多服务商：按能力路由与模型白校验由 Rust `AppConfig::resolve` 兜底（T-Provider / 修 B4）
+ * - 历史由 Rust `list_history` 提供（JSONL 落盘，T-C1）
  */
 
 import { create } from 'zustand';
-import { useAIManager } from 'z-biz-tool-shared';
+import { invoke } from '@tauri-apps/api/core';
+import { toGenError } from '../_shared/genError';
 
-export interface GenerationHistoryItem {
+export type GenKind = 'image' | 'video' | 'ppt' | 'text';
+
+export interface GenerationRecord {
   id: string;
-  kind: 'image' | 'text' | 'video' | 'ppt';
+  kind: GenKind;
   prompt: string;
-  result: string; // 图片 URL 或文本内容
+  model: string | null;
+  params: Record<string, unknown>;
+  /** 结果文件引用（相对数据目录），不再是内联 base64 */
+  result_refs: string[];
+  text_result: string | null;
+  status: 'succeeded' | 'polling' | 'failed' | string;
+  /** ISO8601 */
   created_at: string;
+  usage: { prompt_tokens: number; completion_tokens: number } | null;
+  favorite: boolean;
+}
+
+/** 与 Rust `PublicProvider` 对齐（snake_case 序列化） */
+export interface PublicProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  capabilities: string[];
+  models: string[];
+  has_key: boolean;
+  key_masked: string | null;
+}
+
+/** 与 Rust `ProvidersView` 对齐 */
+interface ProvidersView {
+  providers: PublicProvider[];
+  active: Partial<Record<GenKind, string>>;
+}
+
+export interface ProviderInput {
+  /** 省略表示新建，id 由后端从名称派生 */
+  providerId?: string;
+  name?: string;
+  baseUrl: string;
+  /** 省略或空串 = 保留该服务商既有密钥 */
+  apiKey?: string;
+  capabilities?: GenKind[];
+  models?: string[];
+}
+
+interface HistoryPage {
+  items: GenerationRecord[];
+  total: number;
+  /** 本地已存历史总条数（不受筛选影响） */
+  stored: number;
+  dropped_lines: number;
 }
 
 interface AIGenStore {
-  // API 配置
-  baseUrl: string;
-  apiKey: string;
+  providers: PublicProvider[];
+  active: Partial<Record<GenKind, string>>;
   configLoaded: boolean;
-  
-  // 生成历史
-  history: GenerationHistoryItem[];
-  
-  // 加载状态
-  imageLoading: boolean;
-  textLoading: boolean;
-  videoLoading: boolean;
-  pptLoading: boolean;
-  
-  // 操作
+  configError: string | null;
+
+  /** 配置弹窗开关：错误降级面板也通过它引导用户补全密钥 */
+  configOpen: boolean;
+
+  history: GenerationRecord[];
+  historyTotal: number;
+  historyStored: number;
+  /** 载入时被跳过的损坏行数 */
+  historyDropped: number;
+
   loadConfig: () => Promise<void>;
-  saveConfig: (baseUrl: string, apiKey: string) => Promise<void>;
-  
-  // AI 生成
-  generateImage: (prompt: string, count?: number) => Promise<string[]>;
-  generateText: (prompt: string, model?: string) => Promise<string>;
-  generateVideo: (prompt: string, duration?: number) => Promise<string>;
-  generatePpt: (prompt: string) => Promise<string>;
-  
-  // 历史记录
-  loadHistory: () => Promise<void>;
-  addToHistory: (item: GenerationHistoryItem) => void;
-  clearHistory: () => Promise<void>;
+  saveProvider: (input: ProviderInput) => Promise<void>;
+  removeProvider: (id: string) => Promise<void>;
+  setActive: (kind: GenKind, providerId: string) => Promise<void>;
+  /** 连通性校验：返回上游模型清单（02 §9） */
+  testProvider: (id: string) => Promise<string[]>;
+  loadHistory: (opts?: { kind?: string; keyword?: string; page?: number; size?: number }) => Promise<void>;
+  removeHistory: (id: string) => Promise<void>;
+  wipeHistory: () => Promise<void>;
+  openConfig: () => void;
+  closeConfig: () => void;
 }
 
-export const useAIGenStore = create<AIGenStore>((set, get) => ({
-  baseUrl: '',
-  apiKey: '',
+function applyView(view: ProvidersView): Pick<AIGenStore, 'providers' | 'active' | 'configLoaded'> {
+  return { providers: view.providers, active: view.active ?? {}, configLoaded: true };
+}
+
+/** 某类生成当前会路由到哪个服务商（显式 active > 唯一候选） */
+export function providerFor(
+  state: Pick<AIGenStore, 'providers' | 'active'>,
+  kind: GenKind
+): PublicProvider | null {
+  const supports = (p: PublicProvider) =>
+    p.capabilities.length === 0 || p.capabilities.includes(kind);
+  const activeId = state.active[kind];
+  const byActive = activeId ? state.providers.find((p) => p.id === activeId && supports(p)) : null;
+  if (byActive) return byActive;
+  const candidates = state.providers.filter(supports);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+/** 是否存在可用于该类生成、且已填密钥的服务商 */
+export function isReadyFor(
+  state: Pick<AIGenStore, 'providers' | 'active'>,
+  kind: GenKind
+): boolean {
+  const p = providerFor(state, kind);
+  return Boolean(p?.has_key);
+}
+
+/**
+ * 面板模型下拉的数据源（B4）：
+ * 服务商声明了模型清单就用它，否则返回 null 让面板沿用自己的备用清单。
+ */
+export function useModelOptions(kind: GenKind): {
+  options: { value: string; label: string }[] | null;
+  providerName: string | null;
+} {
+  const providers = useAIGenStore((s) => s.providers);
+  const active = useAIGenStore((s) => s.active);
+  const provider = providerFor({ providers, active }, kind);
+  if (!provider || provider.models.length === 0) {
+    return { options: null, providerName: provider?.name ?? null };
+  }
+  return {
+    options: provider.models.map((m) => ({ value: m, label: m })),
+    providerName: provider.name,
+  };
+}
+
+export const useAIGenStore = create<AIGenStore>((set) => ({
+  providers: [],
+  active: {},
   configLoaded: false,
+  configError: null,
+  configOpen: false,
   history: [],
-  imageLoading: false,
-  textLoading: false,
-  videoLoading: false,
-  pptLoading: false,
+  historyTotal: 0,
+  historyStored: 0,
+  historyDropped: 0,
 
   loadConfig: async () => {
     try {
-      // 尝试从 AI 中台读取配置
-      const coreConfig = useAIManager.getState().config;
-      
-      if (coreConfig.baseUrl && coreConfig.apiKey) {
-        set({
-          baseUrl: coreConfig.baseUrl,
-          apiKey: coreConfig.apiKey,
-          configLoaded: true
-        });
-        return;
-      }
+      const view = await invoke<ProvidersView>('load_api_config');
+      set({ ...applyView(view), configError: null });
     } catch (e) {
-      console.error('从 AI 中台读取配置失败:', e);
-    }
-    
-    // 回退到本地存储
-    try {
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('z-aigen:api-config');
-        if (stored) {
-          const config = JSON.parse(stored);
-          set({
-            baseUrl: config.baseUrl,
-            apiKey: config.apiKey,
-            configLoaded: true
-          });
-          
-          // 同步到 AI 中台
-          useAIManager.getState().updateConfig({
-            baseUrl: config.baseUrl,
-            apiKey: config.apiKey
-          });
-        }
-      }
-    } catch (e) {
-      console.error('加载本地配置失败:', e);
-    }
-    
-    set({ configLoaded: true });
-  },
-
-  saveConfig: async (baseUrl, apiKey) => {
-    try {
-      // 同步到 AI 中台
-      useAIManager.getState().updateConfig({
-        baseUrl,
-        apiKey
+      // 配置读取失败不阻塞界面：面板会在生成时以 NO_CONFIG 错误引导用户。
+      // 但必须清掉旧视图——否则界面还显示"某服务商 sk-****"，而后端其实没配置成功。
+      const err = toGenError(e);
+      set({
+        configLoaded: true,
+        configError: err.message,
+        providers: [],
+        active: {},
       });
-      
-      // 本地存储
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('z-aigen:api-config', JSON.stringify({ baseUrl, apiKey }));
-      }
-      
-      set({ baseUrl, apiKey });
-    } catch (e) {
-      console.error('保存配置失败:', e);
     }
   },
 
-  generateImage: async (prompt, count = 1) => {
-    set({ imageLoading: true });
+  saveProvider: async (input) => {
+    const key = input.apiKey?.trim();
+    const view = await invoke<ProvidersView>('save_api_config', {
+      providerId: input.providerId ?? null,
+      name: input.name ?? null,
+      baseUrl: input.baseUrl.trim(),
+      apiKey: key ? key : null,
+      capabilities: input.capabilities ?? null,
+      models: input.models ?? null,
+    });
+    set(applyView(view));
+  },
+
+  removeProvider: async (id) => {
+    const view = await invoke<ProvidersView>('delete_provider', { providerId: id });
+    set(applyView(view));
+  },
+
+  setActive: async (kind, providerId) => {
+    const view = await invoke<ProvidersView>('set_active_provider', { kind, providerId });
+    set(applyView(view));
+  },
+
+  testProvider: async (id) => invoke<string[]>('test_provider', { providerId: id }),
+
+  loadHistory: async (opts) => {
     try {
-      const result = await useAIManager.getState().executeAI('image', { prompt, count });
-      
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-      
-      // 假设返回的是 JSON 格式
-      try {
-        const data = JSON.parse(result.content);
-        return data.urls || [result.content];
-      } catch {
-        return [result.content];
-      }
-    } finally {
-      set({ imageLoading: false });
-      get().loadHistory();
+      const page = await invoke<HistoryPage>('list_history', {
+        kind: opts?.kind ?? null,
+        keyword: opts?.keyword ?? null,
+        page: opts?.page ?? 0,
+        size: opts?.size ?? 50,
+      });
+      set({
+        history: page.items,
+        historyTotal: page.total,
+        historyStored: page.stored,
+        historyDropped: page.dropped_lines,
+      });
+    } catch {
+      set({ history: [], historyTotal: 0, historyStored: 0 });
     }
   },
 
-  generateText: async (prompt, model) => {
-    set({ textLoading: true });
-    try {
-      const result = await useAIManager.getState().executeAI('generate', { prompt, model });
-      
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-      
-      return result.content;
-    } finally {
-      set({ textLoading: false });
-      get().loadHistory();
-    }
+  /** 破坏性操作：调用方必须先经确认对话框（04 §6） */
+  removeHistory: async (id) => {
+    await invoke('delete_history', { id });
+    await useAIGenStore.getState().loadHistory();
   },
 
-  generateVideo: async (prompt, duration = 5) => {
-    set({ videoLoading: true });
-    try {
-      const result = await useAIManager.getState().executeAI('video', { prompt, duration });
-      
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-      
-      return result.content;
-    } finally {
-      set({ videoLoading: false });
-      get().loadHistory();
-    }
+  wipeHistory: async () => {
+    await invoke('clear_history');
+    set({ history: [], historyTotal: 0 });
   },
 
-  generatePpt: async (prompt) => {
-    set({ pptLoading: true });
-    try {
-      const result = await useAIManager.getState().executeAI('ppt', { prompt });
-      
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-      
-      return result.content;
-    } finally {
-      set({ pptLoading: false });
-      get().loadHistory();
-    }
-  },
-
-  loadHistory: async () => {
-    try {
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('z-aigen:history');
-        if (stored) {
-          set({ history: JSON.parse(stored) });
-        }
-      }
-    } catch (e) {
-      console.error('加载历史失败:', e);
-    }
-  },
-
-  addToHistory: (item) => {
-    set((state) => ({
-      history: [item, ...state.history].slice(0, 50) // 保持最多 50 条
-    }));
-    
-    // 保存到本地
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('z-aigen:history', JSON.stringify(get().history));
-    }
-  },
-
-  clearHistory: async () => {
-    set({ history: [] });
-    
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('z-aigen:history');
-    }
-  }
+  openConfig: () => set({ configOpen: true }),
+  closeConfig: () => set({ configOpen: false }),
 }));

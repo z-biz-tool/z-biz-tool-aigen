@@ -20,4 +20,10 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
-});
+  // vitest：只测状态层与纯函数（Tauri IPC 用 mock），不引真实上游（06 §2/R8）
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.test.{ts,tsx}"],
+    restoreMocks: true,
+  },
+} as Parameters<typeof defineConfig>[0]);

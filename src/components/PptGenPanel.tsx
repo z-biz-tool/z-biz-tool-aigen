@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Card, Input, Button, Space, Select, Typography, List, InputNumber, message } from "antd";
-import { FilePptOutlined, PlusOutlined, DeleteOutlined, DownloadOutlined } from "@ant-design/icons";
-import { useGeneration, EmptyState, LoadingState, ErrorState } from "../_shared";
+import { FilePptOutlined, PlusOutlined, DeleteOutlined, CopyOutlined, CloseCircleOutlined } from "@ant-design/icons";
+import { EmptyState, LoadingState, ErrorState } from "../_shared";
+import { useTask, usePrompt } from "../stores/generationStore";
+import { useAIGenStore } from "../stores/aiStore";
 
 const { TextArea } = Input;
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
 
 interface OutlineItem {
   id: number;
@@ -20,11 +22,13 @@ const templates = [
 ];
 
 export default function PptGenPanel() {
-  const [topic, setTopic] = useState("");
+  const [topic, setTopic] = usePrompt("ppt");
   const [template, setTemplate] = useState("business");
   const [slides, setSlides] = useState(10);
   const [outline, setOutline] = useState<OutlineItem[]>([{ id: 1, title: "", content: "" }]);
-  const { loading, result, error, generate } = useGeneration<string>();
+  const { loading, result, error, submit, cancel } = useTask("ppt");
+  const openConfig = useAIGenStore((s) => s.openConfig);
+  const path = (result as string | null) ?? "";
 
   const addOutlineItem = () => {
     setOutline([...outline, { id: Date.now(), title: "", content: "" }]);
@@ -43,21 +47,36 @@ export default function PptGenPanel() {
       message.warning("请输入PPT主题");
       return;
     }
-    void generate("generate_ppt", { topic, template, slides, outline });
+    void submit("ppt", "generate_ppt", { topic, template, slides, outline });
   };
 
   const renderResult = () => {
-    if (loading) return <LoadingState tip="AI创作中..." />;
+    if (loading) return <LoadingState tip="AI创作中..." onCancel={cancel} />;
     if (error)
-      return <ErrorState message={error} onRetry={handleGenerate} />;
-    if (!result)
+      return <ErrorState error={error} onRetry={handleGenerate} onOpenConfig={openConfig} />;
+    if (!path)
       return <EmptyState title="输入提示词开始生成" description="填写主题与大纲后点击生成" />;
+    // 产物是本地 HTML 文件；webview 内无法用 <a href> 打开本地绝对路径，
+    // 先如实展示路径（统一导出入口见阶段四 T-Export）
     return (
-      <div style={{ textAlign: "center", padding: 24 }}>
-        <Button type="primary" icon={<DownloadOutlined />} href={result} target="_blank">
-          下载PPT文件
+      <Space direction="vertical" style={{ width: "100%" }} align="center">
+        <Text type="secondary">已生成到本地文件：</Text>
+        <Paragraph copyable={{ text: path }} style={{ marginBottom: 0, wordBreak: "break-all" }}>
+          {path}
+        </Paragraph>
+        <Button
+          icon={<CopyOutlined />}
+          onClick={() => {
+            navigator.clipboard.writeText(path);
+            message.success("已复制文件路径");
+          }}
+        >
+          复制路径
         </Button>
-      </div>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          要另存到指定目录：打开「生成历史」，在这条记录上点导出（.html）
+        </Text>
+      </Space>
     );
   };
 
@@ -88,15 +107,20 @@ export default function PptGenPanel() {
               <Text style={{ marginRight: 8 }}>页数：</Text>
               <InputNumber min={1} max={50} value={slides} onChange={(v) => setSlides(v || 10)} />
             </div>
-            <Button
-              type="primary"
-              icon={<FilePptOutlined />}
-              loading={loading}
-              onClick={handleGenerate}
-              size="large"
-            >
-              生成PPT
-            </Button>
+            {loading ? (
+              <Button icon={<CloseCircleOutlined />} onClick={cancel} size="large" danger>
+                取消生成
+              </Button>
+            ) : (
+              <Button
+                type="primary"
+                icon={<FilePptOutlined />}
+                onClick={handleGenerate}
+                size="large"
+              >
+                生成PPT
+              </Button>
+            )}
           </Space>
           <div>
             <Space style={{ width: "100%", justifyContent: "space-between" }}>

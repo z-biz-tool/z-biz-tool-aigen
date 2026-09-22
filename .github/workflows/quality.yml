@@ -1,0 +1,99 @@
+name: Quality gates
+
+# 06 §1 的缺口：build.yml 只装依赖 + tauri build + 传产物，没有任何 typecheck/lint/test。
+# 本 workflow 只做门禁，不出包；三端矩阵是因为代码里有 cfg(unix)/cfg(windows) 分支，
+# 只有 CI 能真正编到（本地 macOS 证不了 Windows 腿）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  # 依赖走国内镜像，跟仓库既有 CI 一致
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  frontend:
+    name: 前端 typecheck + 单测 + 构建
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          rm -rf node_modules
+          npm install --registry=https://registry.npmmirror.com
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+  rust:
+    name: Rust fmt / clippy / test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev
+
+      # tauri::generate_context! 需要 frontendDist 存在，所以先出一次前端
+      - name: Build frontend (for Tauri context)
+        run: |
+          npm install --registry=https://registry.npmmirror.com
+          npm run build
+
+      - name: Install Rust dependencies
+        working-directory: src-tauri
+        run: cargo fetch --locked --config 'source.crates-io.replace-with="rsproxy"' --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"'
+
+      - name: Format check
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+
+      - name: Clippy (warnings are errors)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --locked

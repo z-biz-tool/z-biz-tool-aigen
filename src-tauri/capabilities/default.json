@@ -6,8 +6,6 @@
   "permissions": [
     "core:default",
     "clipboard-manager:default",
-    "dialog:default",
-    "fs:default",
-    "shell:default"
+    "dialog:default"
   ]
 }
