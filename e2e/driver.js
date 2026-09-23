@@ -143,12 +143,20 @@
 
   async function concurrency() {
     const frames = [];
+    const timer = [];
     let stop = false;
     const tick = (t) => {
       frames.push(t);
       if (!stop) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
+    // App 窗口在后台时 WKWebView 会冻结 rAF（frames=0），补一条 setTimeout 采样：
+    // rAF 量的是"渲染掉帧"，timer 量的是"JS 主线程被 IPC/回调占住多久"
+    const sample = () => {
+      timer.push(performance.now());
+      if (!stop) setTimeout(sample, 16);
+    };
+    sample();
     const acks = await Promise.all(
       Array.from({ length: 10 }, (_, i) =>
         I.invoke("submit_generation", {
@@ -168,8 +176,12 @@
     stop = true;
     let maxGap = 0;
     for (let i = 1; i < frames.length; i++) maxGap = Math.max(maxGap, frames[i] - frames[i - 1]);
+    let maxTimerGap = 0;
+    for (let i = 1; i < timer.length; i++) maxTimerGap = Math.max(maxTimerGap, timer[i] - timer[i - 1]);
     log(
-      `CONCURRENCY jobs=${acks.length} settled=${settled.size} frames=${frames.length} maxFrameGapMs=${maxGap.toFixed(1)}`
+      `CONCURRENCY jobs=${acks.length} settled=${settled.size} frames=${frames.length} maxFrameGapMs=${maxGap.toFixed(
+        1
+      )} timerSamples=${timer.length} maxTimerGapMs=${maxTimerGap.toFixed(1)} hiddenNow=${document.hidden}`
     );
   }
 

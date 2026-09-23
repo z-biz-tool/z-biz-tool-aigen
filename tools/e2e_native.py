@@ -189,8 +189,10 @@ def main() -> int:
     data = parse_report(report_text)
     checks: list[tuple[str, bool, str]] = []
 
-    def check(name: str, ok: bool, detail: str = "") -> None:
-        checks.append((name, bool(ok), detail))
+    def check(name: str, ok: bool, detail: str = "", measured: bool = True) -> None:
+        # measured=False ⇒ 环境不具备取证条件，报 SKIP 而不是 FAIL：
+        # "没采到数据" 与 "数据不达标" 混在一起，门禁就成了催改阈值的噪声
+        checks.append((name, bool(ok) if measured else None, detail))
 
     def flag(v) -> bool:
         return str(v).lower() == "true"
@@ -233,15 +235,32 @@ def main() -> int:
         con.get("settled") == con.get("jobs") == str(CONCURRENCY_JOBS),
         f"jobs={con.get('jobs')} settled={con.get('settled')}",
     )
-    gap_raw = (con.get("maxFrameGapMs") or "")
+    gap_raw = con.get("maxFrameGapMs") or ""
+    frames_raw = int(con.get("frames") or 0)
     try:
         gap_ms = float(gap_raw)
     except ValueError:
         gap_ms = 1e9
     check(
         f"并发下最大帧间隔 ≤{MAX_FRAME_GAP_MS}ms（06 §4 #15）",
-        con.get("frames") not in (None, "0") and gap_ms <= MAX_FRAME_GAP_MS,
+        frames_raw > 0 and gap_ms <= MAX_FRAME_GAP_MS,
         f"frames={con.get('frames')} maxFrameGapMs={gap_raw}",
+        measured=frames_raw > 0,
+    )
+    # setTimeout 采样在窗口不可见时会被 WebKit 后台节流（本次实测最大间隔 771ms），
+    # 那既不是掉帧也不是我方卡顿 ⇒ 只在页面可见时把它当证据，否则只报数字不判
+    timer_samples = int(con.get("timerSamples") or 0)
+    visible = not flag(con.get("hiddenNow") or boot.get("hidden"))
+    try:
+        timer_ms = float(con.get("maxTimerGapMs") or "")
+    except ValueError:
+        timer_ms = 1e9
+    check(
+        f"并发下主线程最大阻塞 ≤{MAX_FRAME_GAP_MS}ms（06 §4 #15）",
+        timer_ms <= MAX_FRAME_GAP_MS,
+        f"timerSamples={con.get('timerSamples')} maxTimerGapMs={con.get('maxTimerGapMs')}"
+        + ("" if visible else "（hidden=true，后台定时器被节流，不计入判定）"),
+        measured=timer_samples > 1 and visible,
     )
 
     cancel = data.get("CANCEL", {})
@@ -258,11 +277,23 @@ def main() -> int:
     for line in report_text.splitlines():
         print("  " + line)
     print("\n门禁结果：")
-    failed = 0
+    failed = skipped = 0
     for name, ok, detail in checks:
-        print(f"  {'PASS' if ok else 'FAIL':4}  {name}" + (f"   [{detail}]" if detail and not ok else ""))
-        failed += 0 if ok else 1
-    print(f"\n{len(checks) - failed}/{len(checks)} 项通过；隔离数据目录 {STATE}")
+        tag = "PASS" if ok is True else ("SKIP" if ok is None else "FAIL")
+        print(f"  {tag:4}  {name}" + (f"   [{detail}]" if detail and ok is not True else ""))
+        if ok is None:
+            skipped += 1
+        elif ok is False:
+            failed += 1
+    print(
+        f"\n{len(checks) - failed - skipped}/{len(checks)} 项通过"
+        + (
+            f"，{skipped} 项未测量（窗口在后台时 rAF 会冻结，#15 帧间隔要把 App 带到前台）"
+            if skipped
+            else ""
+        )
+        + f"，{failed} 项失败；隔离数据目录 {STATE}"
+    )
 
     if not args.keep:
         for p in reversed(procs):
