@@ -12,11 +12,14 @@ import {
   message,
   Tag,
 } from "antd";
-import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined, CloseCircleOutlined } from "@ant-design/icons";
+import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined, CloseCircleOutlined, AppstoreOutlined, FileImageOutlined, CloseOutlined } from "@ant-design/icons";
 import { EmptyState, LoadingState, ErrorState } from "../_shared";
 import { exportResult, EXPORT_FILTERS, stamp } from "../_shared/export";
 import { useTask, usePrompt } from "../stores/generationStore";
 import { useAIGenStore, useModelOptions } from "../stores/aiStore";
+import { isBodyVariable, useTemplateStore } from "../stores/templateStore";
+import TemplateManager from "./TemplateManager";
+import { referenceErrorText, useReferenceStore } from "../stores/referenceStore";
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -44,11 +47,35 @@ export default function ImageGenPanel() {
   const [count, setCount] = useState(1);
   const [model, setModel] = useState("dall-e-3");
   const [size, setSize] = useState("1024x1024");
+  const [negative, setNegative] = useState("");
+  const [managing, setManaging] = useState(false);
+  const refImage = useReferenceStore((s) => s.image);
+  const refLabel = useReferenceStore((s) => s.label);
+  const refBusy = useReferenceStore((s) => s.busy);
+  const pickRef = useReferenceStore((s) => s.pick);
+  const clearRef = useReferenceStore((s) => s.clear);
   const { loading, result, error, submit, cancel } = useTask("image");
   const openConfig = useAIGenStore((s) => s.openConfig);
   const { options: providerModels, providerName } = useModelOptions("image");
   const modelOptions = providerModels ?? models;
   const images = (result as string[] | null) ?? [];
+
+  // 02 §1.2：图片风格预设走模板库（内置 3 条 + 用户自建），变量插槽单独填
+  const templates = useTemplateStore((s) => s.items);
+  const loadTemplates = useTemplateStore((s) => s.load);
+  const selectedId = useTemplateStore((s) => s.selected.image);
+  const selectTemplate = useTemplateStore((s) => s.select);
+  const varValues = useTemplateStore((s) => s.values);
+  const setVarValue = useTemplateStore((s) => s.setValue);
+  const renderSelected = useTemplateStore((s) => s.renderSelected);
+
+  useEffect(() => {
+    void loadTemplates("image");
+  }, [loadTemplates]);
+
+  const template = templates.find((t) => t.id === selectedId);
+  const bodyVar = template?.variables.find(isBodyVariable);
+  const extraVars = (template?.variables ?? []).filter((v) => v !== bodyVar);
 
   useEffect(() => {
     if (providerModels && !providerModels.some((m) => m.value === model)) {
@@ -56,12 +83,36 @@ export default function ImageGenPanel() {
     }
   }, [providerModels, model]);
 
-  const handleGenerate = () => {
-    if (!prompt.trim()) {
+  const handleGenerate = async () => {
+    let full = prompt;
+    if (template) {
+      try {
+        const rendered = await renderSelected("image", prompt);
+        if (rendered && rendered.missing.length) {
+          message.warning(`还有变量没填：${rendered.missing.join("、")}`);
+          return;
+        }
+        if (rendered) full = rendered.text;
+      } catch (e) {
+        const err = e as { code?: string; message?: string };
+        message.error(`${err.code ?? "ERROR"}：${err.message ?? String(e)}`);
+        return;
+      }
+    }
+    if (!full.trim()) {
       message.warning("请输入提示词");
       return;
     }
-    void submit("image", { prompt, model, params: { count, size } });
+    void submit("image", {
+      prompt: full,
+      model,
+      params: {
+        count,
+        size,
+        negativePrompt: negative.trim() || null,
+        referenceImage: refImage?.dataUrl ?? null,
+      },
+    });
   };
 
   // H2：不再依赖 `<a download>` 在 webview 里的不确定行为，改走 dialog + Rust 落盘
@@ -169,6 +220,39 @@ export default function ImageGenPanel() {
               💡 提示：越详细的描述，生成的图片越精美
             </div>
           </div>
+          <div>
+            <Space style={{ width: "100%", justifyContent: "space-between" }}>
+              <Text style={{ fontWeight: 500, color: "#4b5563" }}>风格预设（模板库）：</Text>
+              <Button size="small" type="link" icon={<AppstoreOutlined />} onClick={() => setManaging(true)}>
+                管理模板库
+              </Button>
+            </Space>
+            <Space wrap style={{ marginTop: 6 }}>
+              <Select
+                allowClear
+                placeholder="不用预设"
+                value={selectedId}
+                onChange={(v) => selectTemplate("image", v)}
+                style={{ width: 220 }}
+                size="large"
+                options={templates.map((t) => ({
+                  value: t.id,
+                  label: `${t.favorite ? "★ " : ""}${t.name}${t.builtin ? "" : "（我的）"}`,
+                }))}
+              />
+              {extraVars.map((v) => (
+                <Input
+                  key={v}
+                  size="large"
+                  addonBefore={`{${v}}`}
+                  style={{ width: 220 }}
+                  value={varValues[template?.id ?? ""]?.[v] ?? ""}
+                  onChange={(e) => template && setVarValue(template.id, v, e.target.value)}
+                />
+              ))}
+            </Space>
+          </div>
+
           <Space wrap style={{ padding: '4px' }}>
             <div>
               <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>
@@ -205,6 +289,43 @@ export default function ImageGenPanel() {
                 size="large"
               />
             </div>
+            <div style={{ width: "100%", marginTop: 4 }}>
+              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>参考图：</Text>
+              {refImage ? (
+                <Tag
+                  color="blue"
+                  closable
+                  onClose={clearRef}
+                  closeIcon={<CloseOutlined />}
+                  style={{ height: 40, lineHeight: "38px" }}
+                >
+                  <FileImageOutlined /> {refLabel}
+                </Tag>
+              ) : (
+                <Button
+                  size="large"
+                  icon={<FileImageOutlined />}
+                  loading={refBusy}
+                  onClick={() =>
+                    void pickRef().catch((e) => message.error(referenceErrorText(e)))
+                  }
+                >
+                  选本地图片（PNG/JPEG/WEBP/GIF，≤8MB）
+                </Button>
+              )}
+            </div>
+            <div style={{ width: "100%", marginTop: 4 }}>
+              <Text style={{ marginRight: 10, fontWeight: 500, color: "#4b5563" }}>负面提示词：</Text>
+              <Input
+                value={negative}
+                onChange={(e) => setNegative(e.target.value)}
+                placeholder="只想在支持的服务商上生效，例如：模糊、水印、多余的手指（留空则不下发）"
+                maxLength={1000}
+                allowClear
+                style={{ width: 520 }}
+                size="large"
+              />
+            </div>
             {loading ? (
               <Button
                 danger
@@ -220,7 +341,7 @@ export default function ImageGenPanel() {
                 type="primary"
                 size="large"
                 icon={<ThunderboltOutlined />}
-                onClick={handleGenerate}
+                onClick={() => void handleGenerate()}
                 style={{
                   background: brandGradient,
                   border: "none",
@@ -263,6 +384,8 @@ export default function ImageGenPanel() {
       >
         {renderResult()}
       </Card>
+
+      <TemplateManager open={managing} onClose={() => setManaging(false)} kind="image" />
     </div>
   );
 }

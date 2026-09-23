@@ -150,7 +150,7 @@
     };
     requestAnimationFrame(tick);
     const acks = await Promise.all(
-      Array.from({ length: 5 }, (_, i) =>
+      Array.from({ length: 10 }, (_, i) =>
         I.invoke("submit_generation", {
           req: { kind: "text", prompt: `并发 ${i}`, providerId: null, model: "gpt-4o-mini", params: {} },
         })

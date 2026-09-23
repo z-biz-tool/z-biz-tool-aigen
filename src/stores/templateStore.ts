@@ -57,6 +57,11 @@ interface TemplateStore {
   remove: (id: string) => Promise<void>;
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
   render: (id: string, values: Record<string, string>) => Promise<Rendered>;
+  /** 用当前选中模板 + 已填变量渲染；bodyText 填入"正文/主体"类插槽。没选模板返回 null */
+  renderSelected: (
+    kind: TemplateKind,
+    bodyText: string
+  ) => Promise<{ text: string; missing: string[]; templateId: string } | null>;
 }
 
 export const useTemplateStore = create<TemplateStore>((set, get) => ({
@@ -122,6 +127,18 @@ export const useTemplateStore = create<TemplateStore>((set, get) => ({
 
   render: async (id, values) =>
     invoke<Rendered>('render_template', { id, values }),
+
+  renderSelected: async (kind, bodyText) => {
+    const { items, selected, values } = get();
+    const id = selected[kind];
+    const tpl = id ? items.find((t) => t.id === id) : undefined;
+    if (!tpl) return null;
+    const bodyVar = tpl.variables.find(isBodyVariable);
+    const filled: Record<string, string> = { ...(values[tpl.id] ?? {}) };
+    if (bodyVar) filled[bodyVar] = bodyText;
+    const r = await invoke<Rendered>('render_template', { id: tpl.id, values: filled });
+    return { text: r.text, missing: r.missing, templateId: tpl.id };
+  },
 }));
 
 /** 主输入框绑定的变量名：命中它的模板可以直接用面板的大文本框 */

@@ -50,6 +50,30 @@ fn start_task<'a>(state: &'a AppState, request_id: &str) -> (CancellationToken, 
 /// 必须 camelCase：前端 `jobClient` 读的是 `ack.requestId`，
 /// 之前这里是 `request_id`，导致前端拿到 undefined、监听 `aigen://state/undefined`，
 /// **所有任务事件全部丢失**（只有真壳 E2E 抓得到，vitest 用的是自己写的假形状）。
+/// 读一张参考图（02 §1.2）：路径只能来自用户经原生对话框选中，或复用 `results/` 里的历史产物。
+/// 渲染进程没有 fs 权限，这是唯一受控入口（大小上限 + 魔数 + 拒绝目录/符号链接）。
+#[tauri::command]
+pub async fn prepare_reference_image(
+    state: State<'_, AppState>,
+    path: Option<String>,
+    record_id: Option<String>,
+    ref_index: Option<usize>,
+) -> Result<crate::reference::ReferenceImage, GenError> {
+    if let Some(p) = path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return crate::reference::from_path(p);
+    }
+    let id = record_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| GenError::new(code::INVALID_PARAM, "需要提供参考图路径或历史记录 id"))?;
+    let store = state.history.lock().unwrap_or_else(|e| e.into_inner());
+    let rec = store
+        .find(id)
+        .ok_or_else(|| GenError::new(code::INVALID_PARAM, format!("历史记录 {id} 不存在")))?;
+    crate::reference::from_record(&rec, ref_index)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitAck {

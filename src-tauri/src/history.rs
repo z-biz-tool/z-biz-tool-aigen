@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -126,6 +126,21 @@ pub fn decode_data_url(url: &str) -> Option<(Vec<u8>, String)> {
     Some((bytes, mime_ext))
 }
 
+/// 文件是否停在"没有换行结尾"的状态（即上一行是被截断的）。
+/// 必须以**只读**方式另开一次：append 模式打开的句柄读不了末尾字节（会直接 EBADF）。
+fn ends_without_newline(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let Ok(meta) = f.metadata() else { return false };
+    if meta.len() == 0 {
+        return false;
+    }
+    let mut buf = [0u8; 1];
+    f.seek(SeekFrom::End(-1)).is_ok() && f.read(&mut buf).unwrap_or(0) == 1 && buf[0] != b'\n'
+}
+
 /// JSONL 历史存储
 pub struct Store {
     path: PathBuf,
@@ -210,6 +225,20 @@ impl Store {
         Ok(())
     }
 
+    /// 故障注入用：只写半行就停，模拟追加途中掉电。
+    /// JSONL 的追加本身不是原子的，所以这条要证明的是"坏行可恢复"，不是"不会出坏行"。
+    #[cfg(test)]
+    pub fn append_torn_line_for_test(&self, line: &str) -> std::io::Result<()> {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        let half = &line[..line.len() / 2];
+        f.write_all(half.as_bytes())?;
+        f.flush()?;
+        Ok(())
+    }
+
     fn append_line(&self, line: &str) -> Result<(), GenError> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
@@ -220,6 +249,12 @@ impl Store {
             .append(true)
             .open(&self.path)
             .map_err(|e| GenError::storage(format!("打开历史文件失败: {e}")))?;
+        // 上一次若崩在追加中途，文件结尾会缺一行结束符；不补换行就会把新记录
+        // 直接接在残缺行后面 —— 那不止丢一条，而是**此后每条都跟着一起丢**。
+        if ends_without_newline(&self.path) {
+            f.write_all(b"\n")
+                .map_err(|e| GenError::storage(format!("修复残缺行结尾失败: {e}")))?;
+        }
         f.write_all(line.as_bytes())
             .and_then(|_| f.write_all(b"\n"))
             .and_then(|_| f.sync_all())
@@ -588,5 +623,45 @@ mod tests {
         let reopened = Store::open();
         let ids: Vec<&str> = reopened.records().iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["3", "2", "1"]);
+    }
+
+    /// 06 #13 的 JSONL 半边：崩溃留下一行残缺记录后，完好记录一条不丢、能读到备份、之后还能继续写
+    #[test]
+    fn torn_last_append_line_is_skipped_and_backup_kept() {
+        let _sb = Sandbox::new();
+        let mut store = Store::open();
+        for i in 0..3 {
+            store
+                .push(record(&format!("t{i}"), "text", "完好记录"))
+                .unwrap();
+        }
+        let before = std::fs::read_to_string(history_path()).unwrap();
+        assert_eq!(before.lines().count(), 3);
+
+        store
+            .append_torn_line_for_test(r#"{"id":"torn","kind":"text","prompt":"半截"#)
+            .unwrap();
+        let torn = std::fs::read_to_string(history_path()).unwrap();
+        assert_eq!(torn.lines().count(), 4, "应多出一行残缺行");
+
+        let reopened = Store::open();
+        assert_eq!(reopened.len(), 3, "完好记录必须全部读回");
+        assert_eq!(reopened.dropped_lines(), 1);
+        assert!(
+            history_path().with_extension("jsonl.bak").exists(),
+            "受损历史要留 .bak"
+        );
+        assert_eq!(reopened.records()[0].id, "t2", "重开后仍是新→旧");
+
+        let mut after = reopened;
+        after.push(record("t3", "text", "崩溃后的新记录")).unwrap();
+        assert_eq!(Store::open().len(), 4, "恢复后要继续可写可读");
+
+        after.compact().unwrap();
+        let cleaned = std::fs::read_to_string(history_path()).unwrap();
+        assert_eq!(cleaned.lines().count(), 4, "压实后不该再留残缺行");
+        for line in cleaned.lines() {
+            serde_json::from_str::<Record>(line).expect("压实后每行都必须是完整 JSON");
+        }
     }
 }

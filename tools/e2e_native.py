@@ -35,7 +35,7 @@ MOCK_PORT = 8899
 # 阈值来自 06 §4：#5 首字节 ≤2s；#15 并发下无可感知卡顿（这里用最大帧间隔 ≤100ms 近似）
 TTFB_MS = 2000
 MAX_FRAME_GAP_MS = 100
-CONCURRENCY_JOBS = 5
+CONCURRENCY_JOBS = 10
 
 
 def parse_report(text: str) -> dict[str, dict[str, str]]:
@@ -69,16 +69,24 @@ def _vite_env(port: int) -> dict[str, str]:
 
 
 def _wait_http(port: int, timeout: float) -> bool:
+    """vite 默认只绑 localhost（常常是 ::1），所以 127.0.0.1 探不到，两个主机名都要试。"""
     import urllib.request
 
+    # 本机可能挂着 HTTP(S)_PROXY，代理会把对 localhost 的探测变成超时或 502
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     deadline = time.time() + timeout
+    last = None
     while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:
-                if r.status == 200:
-                    return True
-        except Exception:
-            time.sleep(0.5)
+        for host in ("localhost", "[::1]", "127.0.0.1"):
+            try:
+                with opener.open(f"http://{host}:{port}/", timeout=2) as r:
+                    body = r.read().decode("utf8", "ignore")
+                    if r.status == 200 and "__e2e/driver.js" in body:
+                        return True
+            except Exception as e:  # noqa: BLE001
+                last = e
+        time.sleep(0.5)
+    print(f"vite 探测失败：{last}", file=sys.stderr)
     return False
 
 
@@ -150,7 +158,7 @@ def main() -> int:
     app_env = {
         **os.environ,
         "AIGEN_DATA_DIR": str(STATE),
-        "TAURI_CONFIG": json.dumps({"build": {"devUrl": f"http://localhost:{port}"}}),
+        "TAURI_CONFIG": json.dumps({"build": {"devUrl": f"http://localhost:{port}/"}}),
     }
     app = subprocess.Popen(
         ["cargo", "run"],
@@ -177,6 +185,74 @@ def main() -> int:
             for pr in procs:
                 kill_group(pr)
         return 3
+
+    data = parse_report(report_text)
+    checks: list[tuple[str, bool, str]] = []
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        checks.append((name, bool(ok), detail))
+
+    def flag(v) -> bool:
+        return str(v).lower() == "true"
+
+    boot = data.get("BOOT", {})
+    check("前端在真壳里挂载", boot.get("mounted") == "true", str(boot))
+
+    prov = data.get("PROVIDER", {})
+    check("密钥不在 IPC 回传里", flag(prov.get("keyOnWire")) is False, str(prov))
+    check("新建服务商拿到自己的 id", bool(prov.get("id")), str(prov))
+
+    st = data.get("STREAM", {})
+    ttfb = st.get("ttfbMs")
+    check(
+        f"首字节 ≤{TTFB_MS}ms（06 §4 #5）",
+        ttfb is not None and str(ttfb).isdigit() and 0 < int(ttfb) <= TTFB_MS,
+        f"ttfbMs={ttfb}",
+    )
+    check("流式逐段增长（不是一次性甩出）", (st.get("growSteps") or "[]").count(",") >= 1, str(st.get("growSteps")))
+    check("流式终态文本正确", "你好，世界" in (st.get("text") or ""), str(st.get("text")))
+    check("usage 回传并入任务态", st.get("usage") not in (None, "null"), f"usage={st.get('usage')}")
+
+    img = data.get("IMAGE", {})
+    check("图片结果落盘为文件引用（非内联 base64）", (img.get("refs") or "").startswith('["results/'), str(img.get("refs")))
+    # 本用例把数据目录隔离到 /tmp，而 asset scope 只允许 $HOME/.z-biz-tool-aigen/results/**
+    # ⇒ 越界必须读不到。正向证据来自此前在默认目录跑同一驱动：assetRender=loaded 1x1
+    check(
+        "asset 协议按 scope 拒绝越界路径",
+        (img.get("assetRender") or "") == "blocked-or-error",
+        f"assetRender={img.get('assetRender')}",
+    )
+
+    hist = data.get("HISTORY", {})
+    check("历史里没有内联 base64（06 §4 #7）", hist.get("inlineBase64") == "no", str(hist))
+    check("历史已落盘可读", hist.get("total") not in (None, "0"), f"total={hist.get('total')}")
+
+    con = data.get("CONCURRENCY", {})
+    check(
+        f"{CONCURRENCY_JOBS} 个并发任务全部收敛（06 §4 #2/#15）",
+        con.get("settled") == con.get("jobs") == str(CONCURRENCY_JOBS),
+        f"jobs={con.get('jobs')} settled={con.get('settled')}",
+    )
+    gap_raw = (con.get("maxFrameGapMs") or "")
+    try:
+        gap_ms = float(gap_raw)
+    except ValueError:
+        gap_ms = 1e9
+    check(
+        f"并发下最大帧间隔 ≤{MAX_FRAME_GAP_MS}ms（06 §4 #15）",
+        con.get("frames") not in (None, "0") and gap_ms <= MAX_FRAME_GAP_MS,
+        f"frames={con.get('frames')} maxFrameGapMs={gap_raw}",
+    )
+
+    cancel = data.get("CANCEL", {})
+    check(
+        "轮询中的任务可取消",
+        flag(cancel.get("acknowledged")) and cancel.get("status") == "cancelled",
+        f"ack={cancel.get('acknowledged')} status={cancel.get('status')} afterMs={cancel.get('afterMs')}",
+    )
+
+    err = data.get("ERROR")
+    check("驱动全程无异常", err is None, str(err))
 
     print("\nE2E 报告：")
     for line in report_text.splitlines():

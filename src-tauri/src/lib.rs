@@ -6,6 +6,7 @@ mod export;
 mod history;
 mod job;
 pub mod pptx;
+pub mod reference;
 mod secret;
 mod stream;
 mod templates;
@@ -40,6 +41,7 @@ pub fn run() {
             commands::render_template,
             commands::assist_generation,
             commands::save_export,
+            commands::prepare_reference_image,
             commands::data_dir_path,
         ])
         .setup(|app| {

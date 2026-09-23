@@ -588,35 +588,84 @@ async fn ensure_success(
 /// 发送 POST {base_url}/images/generations
 // 参数即 03 §2.1/§7 与 T-B1 要求的图片请求全集，拆开反而要再组装一次
 #[allow(clippy::too_many_arguments)]
+/// 图片生成的可调用参数（03 §2.2 / 02 §1.2：尺寸、负面提示词都参数化）
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ImageOptions {
+    pub model: Option<String>,
+    pub size: Option<String>,
+    /// 仅在不为空时下发：DALL·E 类端点不认这个字段，SD/MiniMax 类认
+    pub negative_prompt: Option<String>,
+    /// 参考图（data URL）。字段名按 OpenAI edits 风格取 `image`，
+    /// 各家不统一（06 R1）：接入真实服务商时按 06 §3 契约测试核对后再调整
+    pub reference_image: Option<String>,
+}
+
+impl ImageOptions {
+    fn normalized(&self) -> Self {
+        Self {
+            model: self
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            size: self
+                .size
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            negative_prompt: self
+                .negative_prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.chars().take(1000).collect()),
+            reference_image: self
+                .reference_image
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| s.starts_with("data:image/"))
+                .map(str::to_string),
+        }
+    }
+
+    fn body(&self, prompt: &str, count: u32) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "prompt": prompt,
+            "n": count,
+            "size": normalize_size(self.size.as_deref()),
+            "response_format": "url",
+        });
+        if let Some(m) = &self.model {
+            body["model"] = serde_json::json!(m);
+        }
+        if let Some(n) = &self.negative_prompt {
+            body["negative_prompt"] = serde_json::json!(n);
+        }
+        if let Some(r) = &self.reference_image {
+            body["image"] = serde_json::json!(r);
+        }
+        body
+    }
+}
+
 pub async fn generate_image_api(
     client: &Client,
     config: &ApiConfig,
     prompt: &str,
     count: u32,
-    model: Option<&str>,
-    size: Option<&str>,
+    opts: &ImageOptions,
     cancel: &CancellationToken,
     timeout: Duration,
 ) -> Result<Vec<String>, GenError> {
     validate_config(config)?;
     check_prompt(prompt)?;
-    if count == 0 || count > MAX_IMAGE_COUNT {
-        return Err(GenError::new(
-            code::INVALID_PARAM,
-            format!("生成数量需在 1..={MAX_IMAGE_COUNT} 之间"),
-        ));
-    }
+    let count = count.clamp(1, MAX_IMAGE_COUNT);
+    let opts = opts.normalized();
 
-    let mut body = serde_json::json!({
-        "prompt": prompt,
-        "n": count,
-        "size": normalize_size(size),
-    });
-    // 仅在用户显式选择时下发 model：部分兼容端点会拒绝缺省 model
-    if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
-        body["model"] = serde_json::Value::String(m.to_string());
-    }
-
+    let body = opts.body(prompt, count);
     let url = format!(
         "{}/images/generations",
         config.base_url.trim_end_matches('/')
@@ -626,21 +675,24 @@ pub async fn generate_image_api(
     })
     .await?;
 
+    let empty = vec![];
+    let data = resp_json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .unwrap_or(&empty);
+
     let mut urls = Vec::new();
-    if let Some(data) = resp_json.get("data").and_then(|d| d.as_array()) {
-        for item in data {
-            if let Some(u) = item.get("url").and_then(|u| u.as_str()) {
-                urls.push(u.to_string());
-            } else if let Some(b64) = item.get("b64_json").and_then(|u| u.as_str()) {
-                urls.push(format!("data:image/png;base64,{}", b64));
-            }
+    for item in data {
+        if let Some(u) = item.get("url").and_then(|u| u.as_str()) {
+            urls.push(u.to_string());
+        } else if let Some(b64) = item.get("b64_json").and_then(|b| b.as_str()) {
+            urls.push(format!("data:image/png;base64,{}", b64));
         }
     }
 
     if urls.is_empty() {
         return Err(GenError::parse("图片接口"));
     }
-
     Ok(urls)
 }
 
@@ -1480,6 +1532,27 @@ mod tests {
         Arc::new(CancellationToken::new())
     }
 
+    /// 旧式调用点用的小包装：把 model/size 塞进 ImageOptions
+    #[allow(clippy::too_many_arguments)]
+    async fn gen_image(
+        client: &Client,
+        config: &ApiConfig,
+        prompt: &str,
+        count: u32,
+        model: Option<&str>,
+        size: Option<&str>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Vec<String>, GenError> {
+        let opts = ImageOptions {
+            model: model.map(str::to_string),
+            size: size.map(str::to_string),
+            negative_prompt: None,
+            reference_image: None,
+        };
+        generate_image_api(client, config, prompt, count, &opts, cancel, timeout).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn gen_text_opts(
         client: &Client,
@@ -1530,6 +1603,76 @@ mod tests {
     }
 
     /// 验收 #8：图片请求体必须带 model + size
+    /// 02 §1.2：负面提示词只在该填了时下发，长度有上限；顺手钉住尺寸校验没被重构丢掉
+    #[tokio::test]
+    async fn negative_prompt_and_size_are_sent_only_when_valid() {
+        let _sb = Sandbox::new();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"url": "https://cdn/x.png"}]
+            })))
+            .mount(&server)
+            .await;
+        let cfg = mock_cfg(&server);
+
+        let opts = ImageOptions {
+            model: Some("sd-xl".into()),
+            size: Some("1024x1024".into()),
+            negative_prompt: Some(format!("{}多余", "模糊".repeat(900))),
+            reference_image: Some("data:image/png;base64,AA".into()),
+        };
+        generate_image_api(
+            &build_client(TEXT_TIMEOUT),
+            &cfg,
+            "猫",
+            1,
+            &opts,
+            &token(),
+            FAST,
+        )
+        .await
+        .unwrap();
+        let req = server.received_requests().await.unwrap().pop().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(
+            body["image"], "data:image/png;base64,AA",
+            "参考图要作为 image 下发"
+        );
+        assert!(body.get("negative_prompt").is_some(), "填了就该下发");
+        assert_eq!(
+            body["negative_prompt"].as_str().unwrap().chars().count(),
+            1000,
+            "负面提示词要截到上限"
+        );
+
+        // 空白/非法值：字段缺席，尺寸回退默认
+        let blank = ImageOptions {
+            model: Some("  ".into()),
+            size: Some("big".into()),
+            negative_prompt: Some("   ".into()),
+            reference_image: Some("not-a-data-url".into()),
+        };
+        generate_image_api(
+            &build_client(TEXT_TIMEOUT),
+            &cfg,
+            "猫",
+            1,
+            &blank,
+            &token(),
+            FAST,
+        )
+        .await
+        .unwrap();
+        let req2 = server.received_requests().await.unwrap().pop().unwrap();
+        let body2: serde_json::Value = serde_json::from_slice(&req2.body).unwrap();
+        assert!(body2.get("negative_prompt").is_none(), "空白不该下发");
+        assert!(body2.get("model").is_none(), "空白模型不该下发");
+        assert!(body2.get("image").is_none(), "非 data URL 的参考图不该下发");
+        assert_eq!(body2["size"], "1024x1024", "非法尺寸必须回退默认值");
+    }
+
     #[tokio::test]
     async fn image_request_body_carries_model_and_size() {
         let _sb = Sandbox::new();
@@ -1543,7 +1686,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let urls = generate_image_api(
+        let urls = gen_image(
             &build_client(TEXT_TIMEOUT),
             &mock_cfg(&server),
             "一只橘猫",
@@ -1579,7 +1722,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let urls = generate_image_api(
+        let urls = gen_image(
             &build_client(TEXT_TIMEOUT),
             &mock_cfg(&server),
             "p",
@@ -1666,7 +1809,7 @@ mod tests {
         let cfg = mock_cfg(&server);
         let cancel = tok.clone();
         let handle = tokio::spawn(async move {
-            generate_image_api(
+            gen_image(
                 &client,
                 &cfg,
                 "p",
@@ -1789,7 +1932,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = generate_image_api(
+        let err = gen_image(
             &build_client(TEXT_TIMEOUT),
             &mock_cfg(&server),
             "x",
@@ -1855,7 +1998,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
             .mount(&server)
             .await;
-        let err = generate_image_api(
+        let err = gen_image(
             &build_client(TEXT_TIMEOUT),
             &mock_cfg(&server),
             "x",
@@ -2158,18 +2301,15 @@ mod tests {
     #[tokio::test]
     async fn single_attempt_against_closed_port_is_fast() {
         let _sb = Sandbox::new();
-        let dead_port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let p = l.local_addr().unwrap().port();
-            drop(l);
-            p
-        };
+        // 用 1 号端口：低于用户态可监听范围且必然没人听 ⇒ 三端都立刻 RST。
+        // 曾经的写法是"bind 一个端口再 drop 拿号"，Windows 上那样不会立即拒绝
+        // （端口处于遗留状态，SYN 会被重试到连接超时），CI 的 Windows 腿因此红过。
         let client = Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .unwrap();
         let cfg = ApiConfig {
-            base_url: format!("http://127.0.0.1:{dead_port}/v1"),
+            base_url: "http://127.0.0.1:1/v1".to_string(),
             api_key: "sk-TEST-x".into(),
         };
         let started = Instant::now();
@@ -2177,7 +2317,7 @@ mod tests {
             &client,
             &cfg,
             &format!("{}/v1/chat/completions", cfg.base_url),
-            &serde_json::json!({"model": "m", "messages": []}),
+            &serde_json::json!({ "model": "m", "messages": [] }),
             &CancellationToken::new(),
             FAST,
         )
@@ -2191,11 +2331,11 @@ mod tests {
         );
         assert!(err.retryable, "网络类失败应标为可重试");
         assert!(
-            elapsed < Duration::from_millis(1500),
-            "单次请求没有快速失败（{elapsed:?}），连接超时可能没生效"
+            elapsed < Duration::from_secs(3),
+            "端口关闭却慢于 3s，说明没有连接超时: {elapsed:?}"
         );
 
-        // 重试策略是有界的：最坏 = 3 次尝试 + 2 次退避（800ms/1600ms 起）
+        // 重试策略是有界的：最坏 = 3 次尝试 + 2 次退避（800ms 基线起）
         assert_eq!(MAX_RETRIES, 2);
         assert_eq!(BACKOFF_BASE_MS, 800);
         let backoff_total = backoff(1) + backoff(2);
@@ -2222,8 +2362,11 @@ mod tests {
     #[tokio::test]
     async fn blackhole_respects_connect_timeout() {
         let _sb = Sandbox::new();
+        // 06 §4 #3 的字面判据："断网失败返回时延 ≤ connect_timeout+1s"。
+        // 用 700ms 的连接超时，这样断言就是 1.7s 这条线本身，而不是随手挑的一个阈值。
+        const CONNECT_MS: u64 = 700;
         let client = Client::builder()
-            .connect_timeout(Duration::from_millis(300))
+            .connect_timeout(Duration::from_millis(CONNECT_MS))
             .build()
             .unwrap();
         let cfg = ApiConfig {
@@ -2248,9 +2391,10 @@ mod tests {
             "实际 {}",
             err.code
         );
+        let bound = Duration::from_millis(CONNECT_MS) + Duration::from_secs(1);
         assert!(
-            elapsed < Duration::from_millis(2500),
-            "黑洞地址上连接超时没生效: {elapsed:?}"
+            elapsed <= bound + Duration::from_millis(200),
+            "违反 06 §4 #3（应 ≤ connect_timeout+1s = {bound:?}）: 实测 {elapsed:?}"
         );
     }
 

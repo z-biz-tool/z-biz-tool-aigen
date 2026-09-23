@@ -54,7 +54,7 @@ export default function TextGenPanel() {
   const selectTemplate = useTemplateStore((s) => s.select);
   const varValues = useTemplateStore((s) => s.values);
   const setVarValue = useTemplateStore((s) => s.setValue);
-  const renderTemplate = useTemplateStore((s) => s.render);
+  const renderSelected = useTemplateStore((s) => s.renderSelected);
   const [managing, setManaging] = useState(false);
 
   useEffect(() => {
@@ -79,15 +79,13 @@ export default function TextGenPanel() {
   const handleGenerate = async () => {
     let prompt = input;
     if (template) {
-      const values: Record<string, string> = { ...(varValues[template.id] ?? {}) };
-      if (bodyVar) values[bodyVar] = input;
       try {
-        const rendered = await renderTemplate(template.id, values);
-        if (rendered.missing.length) {
+        const rendered = await renderSelected("text", input);
+        if (rendered && rendered.missing.length) {
           message.warning(`还有变量没填：${rendered.missing.join("、")}`);
           return;
         }
-        prompt = rendered.text;
+        if (rendered) prompt = rendered.text;
       } catch (e) {
         const err = e as { code?: string; message?: string };
         message.error(`${err.code ?? "ERROR"}：${err.message ?? String(e)}`);

@@ -258,8 +258,12 @@ where
             &cfg,
             &req.prompt,
             req.num("count").unwrap_or(1),
-            model.as_deref(),
-            req.text("size").as_deref(),
+            &ai_client::ImageOptions {
+                model: model.clone(),
+                size: req.text("size"),
+                negative_prompt: req.text("negativePrompt"),
+                reference_image: req.text("referenceImage"),
+            },
             cancel,
             ai_client::IMAGE_TIMEOUT,
         )
@@ -502,8 +506,27 @@ pub(crate) fn image_ext(url: &str) -> String {
 }
 
 /// 成功后写历史。记录内容与旧的 `generate_*` 命令保持一致。
+/// 入库参数里过长的值一律摘要：参考图是 data URL（可达十几 MB），
+/// 原样写进 JSONL 会把历史文件撑爆
+const MAX_PARAM_CHARS: usize = 512;
+
+fn summarize_params(
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = params.clone();
+    for (k, v) in out.iter_mut() {
+        if let Some(s) = v.as_str() {
+            let n = s.chars().count();
+            if n > MAX_PARAM_CHARS {
+                *v = serde_json::json!(format!("<{k}: {n} 字符已省略>"));
+            }
+        }
+    }
+    out
+}
+
 fn commit(state: &ai_client::AppState, req: &GenerationRequest, st: &GenerationState) {
-    let mut params = req.params.clone();
+    let mut params = summarize_params(&req.params);
     params.insert("requested_model".into(), serde_json::json!(req.model));
     let record = Record {
         id: st.record_id.clone().unwrap_or_else(new_id),
@@ -801,6 +824,27 @@ mod tests {
 
         assert_eq!(st.status, status::CANCELLED);
         assert_eq!(st.error.map(|e| e.code), Some(code::CANCELLED.to_string()));
+    }
+
+    /// 参考图是 data URL（十几 MB），绝不能原样进历史；过长参数一律摘要
+    #[test]
+    fn oversized_params_are_summarized_before_hitting_history() {
+        let mut params = serde_json::Map::new();
+        params.insert("size".into(), serde_json::json!("1024x1024"));
+        params.insert(
+            "referenceImage".into(),
+            serde_json::json!(format!("data:image/png;base64,{}", "A".repeat(9000))),
+        );
+        let out = summarize_params(&params);
+        assert_eq!(out["size"], "1024x1024", "短值要原样保留");
+        let kept = out["referenceImage"].as_str().unwrap();
+        assert!(
+            kept.starts_with("<referenceImage: "),
+            "应替换成摘要: {kept}"
+        );
+        assert!(kept.chars().count() < 60);
+        assert!(kept.contains("字符已省略"), "{kept}");
+        assert!(kept.contains("9022"), "摘要里要带原始长度: {kept}");
     }
 
     /// 06 §3「集成」一整条链路串起来：mock 上游 → 结果落盘 → 写历史 → 再导出到用户目录。
