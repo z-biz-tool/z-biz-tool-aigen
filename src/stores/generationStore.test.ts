@@ -42,8 +42,9 @@ function stubSubmit(requestId = "job-1") {
   mockInvoke.mockImplementation((cmd: string) => {
     if (cmd === "submit_generation") return Promise.resolve({ requestId });
     if (cmd === "cancel_generation") return Promise.resolve(true);
+    // 真实后端：submit 已把初始态放进任务表，所以对账只会读到"当前状态"
     if (cmd === "get_generation")
-      return Promise.reject({ code: "INVALID_PARAM", message: "尚未就绪", retryable: false });
+      return Promise.resolve(jobState(requestId, { status: "submitting", textResult: null, preview: [], resultRefs: [], recordId: null, error: null }));
     return Promise.reject({ code: "UNKNOWN", message: `ns ${cmd}`, retryable: false });
   });
 }
@@ -195,24 +196,33 @@ describe("submit → 统一入口 submit_generation", () => {
     expect(task("text").result).toBe("另一条");
   });
 
-  it("轮询续跑：keepResult 保住 task: 句柄，进度可见", async () => {
-    useGenerationStore.setState((s) => ({
-      tasks: { ...s.tasks, video: { ...blank, status: "succeeded", result: "task:vid42" } },
-    }));
+  it("视频轮询：polling 状态下进度可见，终态换成真实地址", async () => {
     stubSubmit("job-poll");
     const p = useGenerationStore
       .getState()
-      .submit("video", { prompt: "", params: { taskId: "vid42" } }, { keepResult: true });
+      .submit("video", { prompt: "脚本", params: { duration: "5" } });
     await tick();
-    expect(task("video").result).toBe("task:vid42");
-
-    emit("job-poll", jobState("job-poll", { kind: "video", status: "polling", progress: { stage: "processing", percent: 42 } }));
-    expect(task("video").progress).toEqual({ stage: "processing", percent: 42 });
-    expect(task("video").result).toBe("task:vid42");
+    expect(task("video").result).toBeNull();
 
     emit(
       "job-poll",
-      jobState("job-poll", { kind: "video", status: "succeeded", preview: ["https://cdn/final.mp4"] })
+      jobState("job-poll", {
+        kind: "video",
+        status: "polling",
+        progress: { stage: "processing", percent: 42 },
+      })
+    );
+    expect(task("video").status).toBe("polling");
+    expect(task("video").progress).toEqual({ stage: "processing", percent: 42 });
+    expect(task("video").result).toBeNull();
+
+    emit(
+      "job-poll",
+      jobState("job-poll", {
+        kind: "video",
+        status: "succeeded",
+        preview: ["https://cdn/final.mp4"],
+      })
     );
     await p;
     expect(task("video").result).toBe("https://cdn/final.mp4");

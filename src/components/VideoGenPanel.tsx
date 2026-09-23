@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Card, Input, Button, Space, Select, Typography, message, Progress, Spin } from "antd";
+import { useState } from "react";
+import { Card, Input, Button, Space, Select, Typography, message, Progress } from "antd";
 import { VideoCameraOutlined, CloseCircleOutlined, DownloadOutlined } from "@ant-design/icons";
 import { EmptyState, LoadingState, ErrorState } from "../_shared";
 import { EXPORT_FILTERS, exportResult, stamp } from "../_shared/export";
@@ -29,44 +29,30 @@ export default function VideoGenPanel() {
   const { loading, result, error, progress, submit, cancel } = useTask("video");
   const openConfig = useAIGenStore((s) => s.openConfig);
   const src = (result as string | null) ?? "";
-  const polledRef = useRef<string | null>(null);
 
   const handleGenerate = () => {
     if (!prompt.trim()) {
       message.warning("请输入视频脚本");
       return;
     }
-    polledRef.current = null;
     void submit("video", { prompt, params: { duration, resolution } });
   };
 
-  // B2 / T-B2：上游只回任务号时自动转入轮询，进度走 aigen://progress/{requestId}
-  useEffect(() => {
-    if (!src.startsWith("task:")) return;
-    if (polledRef.current === src) return;
-    polledRef.current = src;
-    void submit("video", { prompt: "", params: { taskId: src.slice(5) } }, { keepResult: true });
-  }, [src, submit]);
-
   const renderResult = () => {
-    if (src.startsWith("task:")) {
+    // T-B2：上游只回任务号时，由后端在同一个 job 里轮询，进度以 polling 状态推回来
+    if (loading && progress)
       return (
         <Space direction="vertical" align="center" style={{ width: "100%" }} size="middle">
-          <EmptyState title="任务已提交，正在等待上游出片" description={`任务号 ${src.slice(5)}`} />
-          {progress ? (
-            <Progress percent={progress.percent ?? 0} status="active" style={{ width: 320 }} />
-          ) : (
-            <Spin />
-          )}
+          <EmptyState title="任务已提交，正在等待上游出片" />
+          <Progress percent={progress.percent ?? 0} status="active" style={{ width: 320 }} />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {progress ? `上游状态：${progress.stage}` : "查询中…"}（最长等 5 分钟，可随时取消）
+            上游状态：{progress.stage}（可随时取消）
           </Text>
           <Button danger icon={<CloseCircleOutlined />} onClick={cancel}>
             取消等待
           </Button>
         </Space>
       );
-    }
     if (loading) return <LoadingState tip="AI创作中..." onCancel={cancel} />;
     if (error)
       return <ErrorState error={error} onRetry={handleGenerate} onOpenConfig={openConfig} />;

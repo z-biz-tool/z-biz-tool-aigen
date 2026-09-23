@@ -896,8 +896,7 @@ pub async fn generate_video_api(
         }
     }
     if let Some(task_id) = resp_json.get("task_id").and_then(|t| t.as_str()) {
-        // 异步任务模式:返回一个占位 URL,实际应轮询 task 状态（T-B2，阶段四）
-        // 简化处理:直接返回 task_id 作为标识,前端显示"任务已提交"
+        // 异步任务模式：回一个 `task:` 句柄，由 job 层转入轮询（T-B2）
         return Ok(format!("task:{}", task_id));
     }
 

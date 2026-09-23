@@ -99,11 +99,7 @@ function derive(prev: TaskState, st: GenerationState): TaskState {
 interface GenerationStore {
   tasks: Record<GenKind, TaskState>;
   prompts: Record<GenKind, string>;
-  submit: (
-    kind: GenKind,
-    args: JobArgs,
-    opts?: { keepResult?: boolean }
-  ) => Promise<void>;
+  submit: (kind: GenKind, args: JobArgs) => Promise<void>;
   cancel: (kind: GenKind) => void;
   reset: (kind: GenKind) => void;
   setPrompt: (kind: GenKind, value: string) => void;
@@ -115,14 +111,11 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
   tasks: { image: EMPTY_TASK, video: EMPTY_TASK, ppt: EMPTY_TASK, text: EMPTY_TASK },
   prompts: EMPTY_PROMPTS,
 
-  submit: async (kind, args, opts) => {
-    const prev = get().tasks[kind];
+  submit: async (kind, args) => {
     const started: TaskState = {
       ...EMPTY_TASK,
       status: "submitting",
       startedAt: Date.now(),
-      // 视频轮询等续跑场景：不清掉已有结果（task: 句柄），否则等待期界面会空掉
-      result: opts?.keepResult ? prev.result : null,
     };
     set((s) => ({ tasks: { ...s.tasks, [kind]: started } }));
 

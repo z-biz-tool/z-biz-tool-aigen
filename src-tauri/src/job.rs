@@ -240,8 +240,11 @@ where
     let model = chosen.or_else(|| req.model.clone());
     st.model = model.clone();
 
-    if req.kind == "video" && req.text("taskId").is_some() {
-        return poll_video(state, st, req, &cfg, cancel, &mut emit).await;
+    // 视频可以是"提交→轮询"两段式：taskId 有两个来源，都走同一个轮询分支
+    if req.kind == "video" {
+        if let Some(id) = req.text("taskId") {
+            return poll_video(state, st, req, &cfg, cancel, &mut emit, &id).await;
+        }
     }
 
     st.touch(status::SUBMITTING);
@@ -270,17 +273,30 @@ where
         .await
         .map(Generated::Urls),
 
-        "video" => ai_client::generate_video_api(
-            &state.client,
-            &cfg,
-            &req.prompt,
-            &req.text("duration").unwrap_or_else(|| "5".into()),
-            &req.text("resolution").unwrap_or_else(|| "1080p".into()),
-            cancel,
-            ai_client::VIDEO_TIMEOUT,
-        )
-        .await
-        .map(|u| Generated::Urls(vec![u])),
+        "video" => {
+            let r = ai_client::generate_video_api(
+                &state.client,
+                &cfg,
+                &req.prompt,
+                &req.text("duration").unwrap_or_else(|| "5".into()),
+                &req.text("resolution").unwrap_or_else(|| "1080p".into()),
+                cancel,
+                ai_client::VIDEO_TIMEOUT,
+            )
+            .await;
+            match r {
+                // 上游只回任务号时，轮询仍归本 job：以前把 "task:x" 当 URL 交给
+                // persist_urls 去下载，并且要前端自己再 submit 一次（多一条历史记录）
+                Ok(u) => match u.strip_prefix("task:") {
+                    Some(id) => {
+                        drop(permit);
+                        return poll_video(state, st, req, &cfg, cancel, &mut emit, id).await;
+                    }
+                    None => Ok(Generated::Urls(vec![u])),
+                },
+                Err(e) => Err(e),
+            }
+        }
 
         "ppt" => {
             let id = new_id();
@@ -378,7 +394,8 @@ where
     }
 }
 
-/// 视频任务轮询分支（T-B2）：进度以 polling 状态持续上报
+/// 视频任务轮询分支（T-B2）：进度以 polling 状态持续上报。
+/// `task_id` 有两个来源：前端续跑历史里的任务号，或上游在提交响应里直接回的任务号。
 async fn poll_video<E>(
     state: &ai_client::AppState,
     mut st: GenerationState,
@@ -386,11 +403,11 @@ async fn poll_video<E>(
     cfg: &ai_client::ApiConfig,
     cancel: &CancellationToken,
     emit: &mut E,
+    task_id: &str,
 ) -> GenerationState
 where
     E: FnMut(&GenerationState),
 {
-    let task_id = req.text("taskId").unwrap_or_default();
     st.touch(status::POLLING);
     st.progress = Some(JobProgress {
         stage: "queued".into(),
@@ -405,7 +422,7 @@ where
     let result = ai_client::poll_video_task(
         &state.client,
         cfg,
-        &task_id,
+        task_id,
         cancel,
         ai_client::VIDEO_POLL_INTERVAL,
         ai_client::VIDEO_POLL_BUDGET,
@@ -428,7 +445,8 @@ where
             let record_id = new_id();
             st.record_id = Some(record_id.clone());
             st.preview = vec![url.clone()];
-            st.result_refs = vec![url];
+            // 与图片同处理：CDN 链接会过期，落盘后历史里才是能点的引用
+            st.result_refs = persist_urls(state, &record_id, &[url], cancel).await;
             st.progress = Some(JobProgress {
                 stage: "已完成".into(),
                 percent: Some(100),
@@ -744,6 +762,71 @@ mod tests {
         let rec = &guard.records()[0];
         assert_eq!(rec.result_refs, st.result_refs);
         assert!(rec.text_result.is_none());
+    }
+
+    #[tokio::test]
+    async fn video_task_handle_from_submit_polls_inside_the_same_job() {
+        let _sb = crate::secret::test_sandbox::Sandbox::new();
+        let server = MockServer::start().await;
+        // 上游提交只回任务号（异步任务模式）
+        Mock::given(method("POST"))
+            .and(path("/v1/video/generations"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "task_id": "v7" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/video/tasks/v7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "succeeded",
+                "url": format!("{}/clip.mp4", server.uri()),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/clip.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "video/mp4")
+                    .set_body_bytes(b"fake-mp4".as_slice()),
+            )
+            .mount(&server)
+            .await;
+
+        let state = state_with(&server);
+        let mut seen = Vec::new();
+        let st = execute(
+            &state,
+            "job-v2",
+            &req("video", "一只猫在冲浪"),
+            &CancellationToken::new(),
+            |s| seen.push(s.clone()),
+        )
+        .await;
+
+        // 回归：以前 "task:v7" 会被当 URL 交给 persist_urls 去下载，
+        // 并且要前端自己再 submit 一次（多一条历史记录、多占一次额度）
+        assert_eq!(st.status, status::SUCCEEDED, "{:?}", st.error);
+        assert_eq!(st.preview, vec![format!("{}/clip.mp4", server.uri())]);
+        assert!(
+            st.result_refs[0].starts_with("results/"),
+            "{}",
+            st.result_refs[0]
+        );
+        assert_eq!(
+            std::fs::read(history::Store::resolve_ref(&st.result_refs[0])).unwrap(),
+            b"fake-mp4"
+        );
+        assert!(
+            seen.iter().any(|s| s.status == status::POLLING),
+            "轮询期间应报 polling，界面才有进度：{seen:?}"
+        );
+        assert_eq!(
+            state.history.lock().unwrap().records().len(),
+            1,
+            "一个任务只应留一条历史"
+        );
     }
 
     #[tokio::test]

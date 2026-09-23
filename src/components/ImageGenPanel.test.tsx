@@ -116,7 +116,7 @@ beforeEach(() => {
       return Promise.resolve({ template_id: template.id, kind: "image", text, missing });
     }
     if (cmd === "get_generation")
-      return Promise.reject({ code: "INVALID_PARAM", message: "未就绪", retryable: false });
+      return Promise.resolve(jobState({ status: "submitting", textResult: null, preview: [], resultRefs: [], recordId: null, error: null }));
     return Promise.resolve({});
   });
 });

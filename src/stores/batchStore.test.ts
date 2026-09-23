@@ -36,30 +36,36 @@ function jobState(id: string, over: Partial<GenerationState> = {}): GenerationSt
 }
 
 const emit = (id: string, st: GenerationState) =>
-  handlers
-    .filter((h) => h.event === `aigen://state/${id}`)
-    .forEach((h) => h.fn({ payload: st }));
+  handlers.filter((h) => h.event === `aigen://state/${id}`).forEach((h) => h.fn({ payload: st }));
 
 /** 每条 prompt 分配一个 requestId，事件由测试自己发出去 */
 function stubJobs(handler?: (req: Record<string, unknown>, id: string) => void) {
-  mockInvoke.mockImplementation((cmd: string, args: { req?: { prompt?: string } }) => {
-    if (cmd === "submit_generation") {
-      const id = `job-${++seq}`;
-      handler?.(args.req as Record<string, unknown>, id);
-      return Promise.resolve({ requestId: id });
+  mockInvoke.mockImplementation(
+    (cmd: string, args: { req?: { prompt?: string }; requestId?: string }) => {
+      if (cmd === "submit_generation") {
+        const id = `job-${++seq}`;
+        handler?.(args.req as Record<string, unknown>, id);
+        return Promise.resolve({ requestId: id });
+      }
+      if (cmd === "cancel_generation") return Promise.resolve(true);
+      if (cmd === "get_generation")
+        return Promise.resolve(
+          jobState(args.requestId ?? "", {
+            status: "submitting",
+            textResult: null,
+            preview: [],
+            resultRefs: [],
+            recordId: null,
+            error: null,
+          })
+        );
+      return Promise.reject({ code: "UNKNOWN", message: `ns ${cmd}`, retryable: false });
     }
-    if (cmd === "cancel_generation") return Promise.resolve(true);
-    if (cmd === "get_generation")
-      return Promise.reject({ code: "INVALID_PARAM", message: "未就绪", retryable: false });
-    return Promise.reject({ code: "UNKNOWN", message: `ns ${cmd}`, retryable: false });
-  });
+  );
 }
 
 /** 等某条进入期望状态（事件是 setTimeout 发来的，需要轮询） */
-const untilStatus = async (
-  pred: (i: import("./batchStore").BatchItem) => boolean,
-  ms = 1500
-) => {
+const untilStatus = async (pred: (i: import("./batchStore").BatchItem) => boolean, ms = 1500) => {
   const start = Date.now();
   while (!useBatchStore.getState().items.some(pred) && Date.now() - start < ms)
     await new Promise((r) => setTimeout(r, 10));
@@ -104,7 +110,10 @@ describe("batchStore.start（02 §7）", () => {
 
   it("整批并发不自己限流：一次性全部提交，排队交给后端闸门", async () => {
     stubJobs();
-    useBatchStore.getState().start("text", Array.from({ length: 6 }, (_, i) => `p${i}`));
+    useBatchStore.getState().start(
+      "text",
+      Array.from({ length: 6 }, (_, i) => `p${i}`)
+    );
     await untilSubmitted(6);
     expect(requests().length).toBe(6);
     expect(useBatchStore.getState().items.every((i) => i.status === "running")).toBe(true);
@@ -114,7 +123,13 @@ describe("batchStore.start（02 §7）", () => {
     stubJobs((req, id) => {
       if (req.prompt === "bad") {
         setTimeout(() =>
-          emit(id, jobState(id, { status: "failed", error: { code: "TIMEOUT", message: "超时", retryable: true } }))
+          emit(
+            id,
+            jobState(id, {
+              status: "failed",
+              error: { code: "TIMEOUT", message: "超时", retryable: true },
+            })
+          )
         );
       } else {
         setTimeout(() => emit(id, jobState(id, { textResult: `ok:${req.prompt}` })));
@@ -124,7 +139,9 @@ describe("batchStore.start（02 §7）", () => {
     const untilDone = async () => {
       const start = Date.now();
       while (
-        useBatchStore.getState().items.some((i) => i.status === "running" || i.status === "queued") &&
+        useBatchStore
+          .getState()
+          .items.some((i) => i.status === "running" || i.status === "queued") &&
         Date.now() - start < 2000
       )
         await new Promise((r) => setTimeout(r, 10));
@@ -146,7 +163,10 @@ describe("batchStore.start（02 §7）", () => {
         emit(
           id,
           req.prompt === "bad"
-            ? jobState(id, { status: "failed", error: { code: "RATE_LIMIT", message: "限流", retryable: true } })
+            ? jobState(id, {
+                status: "failed",
+                error: { code: "RATE_LIMIT", message: "限流", retryable: true },
+              })
             : jobState(id, { textResult: "好" })
         )
       )
@@ -164,7 +184,9 @@ describe("batchStore.start（02 §7）", () => {
     expect(requests().length).toBe(1);
     expect(requests()[0]).toMatchObject({ prompt: "bad", model: "m1" });
     await untilStatus((i) => i.key === failedKey && i.status === "succeeded");
-    expect(useBatchStore.getState().items.find((i) => i.key === failedKey)?.result).toBe("重试后成功");
+    expect(useBatchStore.getState().items.find((i) => i.key === failedKey)?.result).toBe(
+      "重试后成功"
+    );
     // 另一条没被重跑
     expect(requests().length).toBe(1);
     expect(before).toBe(2);
@@ -216,7 +238,10 @@ describe("batchStore.start（02 §7）", () => {
   it("图片结果落到 preview 拼接，便于展示/导出", async () => {
     stubJobs((_req, id) =>
       setTimeout(() =>
-        emit(id, jobState(id, { kind: "image", preview: ["https://cdn/a.png", "https://cdn/b.png"] }))
+        emit(
+          id,
+          jobState(id, { kind: "image", preview: ["https://cdn/a.png", "https://cdn/b.png"] })
+        )
       )
     );
     useBatchStore.getState().start("image", ["猫"], { count: 2 });

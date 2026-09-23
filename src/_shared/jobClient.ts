@@ -55,6 +55,11 @@ interface SubmitAck {
   requestId: string;
 }
 
+/** 对账节奏。事件是主路，轮询只兜底，所以这个值只要比"能接受的卡住时长"小就行。 */
+const RECONCILE_MS = 500;
+/** 后端连续 RECONCILE_MS 这么久都读不到状态、期间也没有任何事件 ⇒ 判定任务已丢失 */
+const MISSING_LIMIT = 3;
+
 /** 提交并跟踪到终态。事件为主，`get_generation` 对账为辅（事件丢失/订阅失败也能收敛）。 */
 export async function runJob(
   args: JobArgs & { kind: string },
@@ -74,10 +79,13 @@ export async function runJob(
   onRequestId?.(requestId);
   let last: GenerationState | null = null;
   const wakeups: Array<() => void> = [];
+  /** 事件到达过就刷新，用来把"轮询读不到"与"任务真的没了"区分开 */
+  let eventSeq = 0;
 
   let unlisten: UnlistenFn | null = null;
   try {
     unlisten = await listen<GenerationState>(`aigen://state/${requestId}`, (e) => {
+      eventSeq += 1;
       last = e.payload;
       onState?.(e.payload);
       wakeups.splice(0).forEach((w) => w());
@@ -96,14 +104,40 @@ export async function runJob(
       });
     });
 
+  /**
+   * 轮询快照只在"不是倒退"时才采纳。事件是同一处按序发的，直接覆盖；
+   * 轮询可能在途时被新事件超过，所以必须挡住。`updatedAt` 只到秒，
+   * 故判据保守：终态一定覆盖非终态，其余要求严格更新。
+   */
+  const acceptPolled = (next: GenerationState) => {
+    if (!last) return true;
+    if (isTerminal(next.status) && !isTerminal(last.status)) return true;
+    if (isTerminal(last.status)) return false;
+    return next.updatedAt > last.updatedAt;
+  };
+
   try {
-    // 上限与后端视频轮询预算同级，避免前端无限等
-    for (let i = 0; i < 1600 && !(last && isTerminal(last.status)); i++) {
-      if (!last) {
-        last = await invoke<GenerationState>("get_generation", { requestId }).catch(() => null);
-        if (last) onState?.(last);
+    // 不设挂钟上限：图片单次请求可静默 180s、视频轮询预算 300s，
+    // 排队等闸门更没有上界（一批 10 条要等前面的跑完）。误杀健康任务比多等更糟，
+    // 用户要停下来随时可以 cancelJob —— 后端的每个 await 都有超时或取消。
+    let misses = 0;
+    let seqAtLastPoll = eventSeq;
+    while (!last || !isTerminal(last.status)) {
+      const s = await invoke<GenerationState>("get_generation", { requestId }).catch(() => null);
+      if (s) {
+        misses = 0;
+        if (acceptPolled(s)) {
+          last = s;
+          onState?.(s);
+        }
+      } else {
+        // 这期间来过事件说明连接是活的，不算丢任务
+        misses = eventSeq === seqAtLastPoll ? misses + 1 : 0;
+        if (misses >= MISSING_LIMIT) break;
       }
-      await wait(200);
+      seqAtLastPoll = eventSeq;
+      if (last && isTerminal(last.status)) break;
+      await wait(RECONCILE_MS);
     }
   } finally {
     unlisten?.();
@@ -113,8 +147,16 @@ export async function runJob(
   if (!last) {
     throw {
       code: "PARSE",
-      message: `任务 ${requestId} 状态不可读`,
+      message: `任务 ${requestId} 状态不可读（后端已不认这个任务号，可能应用重启过或已被回收）`,
       retryable: false,
+    };
+  }
+  if (!isTerminal(last.status)) {
+    // 绝不能把非终态当结果交回去：调用方会把它当成"完成"，界面从此卡在加载态
+    throw {
+      code: "NETWORK",
+      message: `读不到任务 ${requestId} 的状态（已停止于 ${last.status}），任务可能仍在后台进行，可在历史中查看`,
+      retryable: true,
     };
   }
   return last;

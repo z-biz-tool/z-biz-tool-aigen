@@ -84,7 +84,7 @@ beforeEach(() => {
     if (cmd === "submit_generation") return Promise.resolve({ requestId: "job-1" });
     if (cmd === "list_templates") return Promise.resolve({ items: [], corrupted: 0 });
     if (cmd === "get_generation")
-      return Promise.reject({ code: "INVALID_PARAM", message: "未就绪", retryable: false });
+      return Promise.resolve(state({ status: "submitting", textResult: null, preview: [], resultRefs: [], recordId: null, error: null }));
     return Promise.resolve({});
   });
 });
