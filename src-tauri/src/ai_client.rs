@@ -280,6 +280,8 @@ pub struct AppState {
     pub tasks: Mutex<HashMap<String, CancellationToken>>,
     /// 生成任务并发闸门
     pub gate: tokio::sync::Semaphore,
+    /// 统一入口的任务表（T-State：`get_generation` 读它）
+    pub jobs: std::sync::Arc<crate::job::Registry>,
 }
 
 impl Default for AppState {
@@ -297,6 +299,7 @@ impl AppState {
             client: build_client(TEXT_TIMEOUT),
             tasks: Mutex::new(HashMap::new()),
             gate: tokio::sync::Semaphore::new(MAX_CONCURRENT_GENERATIONS),
+            jobs: std::sync::Arc::new(crate::job::Registry::default()),
         }
     }
 
@@ -529,7 +532,8 @@ async fn race<T, F: Future<Output = T>>(cancel: &CancellationToken, fut: F) -> R
 }
 
 fn backoff(attempt: u32) -> Duration {
-    let exp = BACKOFF_BASE_MS.saturating_mul(1u64 << attempt.min(5));
+    // 第 1 次重试 ≈ base，之后指数放大（03 §2.4：base 800ms + 抖动）
+    let exp = BACKOFF_BASE_MS.saturating_mul(1u64 << (attempt.saturating_sub(1)).min(5));
     let mut jitter = [0u8; 2];
     let _ = getrandom::getrandom(&mut jitter);
     Duration::from_millis(exp + u64::from(u16::from_be_bytes(jitter)) % 200)
@@ -1245,7 +1249,7 @@ pub async fn generate_ppt_file(
     req: &PptRequest,
     outline_model: Option<&str>,
     cancel: &CancellationToken,
-) -> Result<(String, String), GenError> {
+) -> Result<crate::pptx::Artifact, GenError> {
     let PptRequest {
         topic,
         template,
@@ -1333,10 +1337,22 @@ pub async fn generate_ppt_file(
     // 第二步: 生成 HTML 格式的 PPT 文件
     let html = render_ppt_html(topic, template, &slides_content);
 
-    // 第三步: 原子写入数据目录 results/，历史只引用相对路径
-    let rel = crate::history::save_result_bytes(id, 0, "html", html.as_bytes())?;
-    let abs = crate::history::Store::resolve_ref(&rel);
-    Ok((abs.to_string_lossy().to_string(), rel))
+    // 第三步: 同时产出可交付的 .pptx 与所见即所得的 HTML 预览（05 T-B3）
+    let deck: Vec<crate::pptx::Slide> = slides_content
+        .iter()
+        .map(|s| crate::pptx::Slide {
+            title: s.title.clone(),
+            body: s.content.clone(),
+        })
+        .collect();
+    let pptx_bytes = crate::pptx::build(topic, &deck)?;
+    let rel_pptx = crate::history::save_result_bytes(id, 0, "pptx", &pptx_bytes)?;
+    let rel_html = crate::history::save_result_bytes(id, 1, "html", html.as_bytes())?;
+    let preview = crate::history::Store::resolve_ref(&rel_html);
+    Ok(crate::pptx::Artifact {
+        preview: preview.to_string_lossy().to_string(),
+        refs: vec![rel_pptx, rel_html],
+    })
 }
 
 /// 渲染PPT为HTML格式(可浏览器直接打开)
@@ -2134,6 +2150,195 @@ mod tests {
         };
         cfg.normalize();
         cfg
+    }
+
+    /// 06 #1/#3：**单次请求**在端口已关时必须快速失败（连接超时生效）。
+    /// 直连 `text_once` 而不走 `generate_text_api`，是为了把重试退避这个变量隔离掉——
+    /// 用户可见的最坏时延 = 单次快速失败 ×(1+MAX_RETRIES) + 退避，那部分单独断言。
+    #[tokio::test]
+    async fn single_attempt_against_closed_port_is_fast() {
+        let _sb = Sandbox::new();
+        let dead_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+        let client = Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap();
+        let cfg = ApiConfig {
+            base_url: format!("http://127.0.0.1:{dead_port}/v1"),
+            api_key: "sk-TEST-x".into(),
+        };
+        let started = Instant::now();
+        let err = text_once(
+            &client,
+            &cfg,
+            &format!("{}/v1/chat/completions", cfg.base_url),
+            &serde_json::json!({"model": "m", "messages": []}),
+            &CancellationToken::new(),
+            FAST,
+        )
+        .await
+        .expect_err("连不上必须报错");
+        let elapsed = started.elapsed();
+        assert!(
+            err.code == code::NETWORK || err.code == code::TIMEOUT,
+            "错误码应为网络类，实际 {}",
+            err.code
+        );
+        assert!(err.retryable, "网络类失败应标为可重试");
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "单次请求没有快速失败（{elapsed:?}），连接超时可能没生效"
+        );
+
+        // 重试策略是有界的：最坏 = 3 次尝试 + 2 次退避（800ms/1600ms 起）
+        assert_eq!(MAX_RETRIES, 2);
+        assert_eq!(BACKOFF_BASE_MS, 800);
+        let backoff_total = backoff(1) + backoff(2);
+        assert!(
+            backoff_total >= Duration::from_millis(2300)
+                && backoff_total <= Duration::from_millis(2900),
+            "两次退避应在 0.8s + 1.6s 附近（含抖动）: {backoff_total:?}"
+        );
+        assert!(
+            backoff(1) >= Duration::from_millis(800) && backoff(1) < Duration::from_millis(1000),
+            "首次退避应以 800ms 为基线: {:?}",
+            backoff(1)
+        );
+
+        // 生产超时配置符合 03 §2.1
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(TEXT_TIMEOUT, Duration::from_secs(120));
+        assert_eq!(IMAGE_TIMEOUT, Duration::from_secs(180));
+        assert_eq!(VIDEO_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(STREAM_TIMEOUT, Duration::from_secs(300));
+    }
+
+    /// 黑洞地址（SYN 无响应）：连接超时必须能掐住它，而不是等 OS 默认的几十秒
+    #[tokio::test]
+    async fn blackhole_respects_connect_timeout() {
+        let _sb = Sandbox::new();
+        let client = Client::builder()
+            .connect_timeout(Duration::from_millis(300))
+            .build()
+            .unwrap();
+        let cfg = ApiConfig {
+            // 必须 https：明文 IP 会被 validate_config 先拦掉
+            base_url: "https://10.255.255.1/v1".to_string(),
+            api_key: "sk-TEST-x".into(),
+        };
+        let started = Instant::now();
+        let err = text_once(
+            &client,
+            &cfg,
+            &format!("{}/v1/chat/completions", cfg.base_url),
+            &serde_json::json!({"model": "m", "messages": []}),
+            &CancellationToken::new(),
+            FAST,
+        )
+        .await
+        .expect_err("必须超时或连接失败");
+        let elapsed = started.elapsed();
+        assert!(
+            err.code == code::TIMEOUT || err.code == code::NETWORK,
+            "实际 {}",
+            err.code
+        );
+        assert!(
+            elapsed < Duration::from_millis(2500),
+            "黑洞地址上连接超时没生效: {elapsed:?}"
+        );
+    }
+
+    /// 顺带钉住：明文非本地端点在**发出任何请求前**就被拒（04 §3 传输安全）
+    #[tokio::test]
+    async fn plaintext_remote_endpoint_is_rejected_before_any_request() {
+        let _sb = Sandbox::new();
+        let client = Client::builder().build().unwrap();
+        let cfg = ApiConfig {
+            base_url: "http://10.255.255.1/v1".to_string(),
+            api_key: "sk-TEST-x".to_string(),
+        };
+        let started = Instant::now();
+        let err = generate_text_api(
+            &client,
+            &cfg,
+            "hi",
+            "m",
+            &TextOptions::default(),
+            &CancellationToken::new(),
+            Duration::from_millis(500),
+        )
+        .await
+        .expect_err("必须被本地拦下");
+        assert_eq!(err.code, code::INVALID_PARAM);
+        assert!(!err.retryable, "配置类错误不该被自动重试");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "根本没走本地校验"
+        );
+    }
+
+    /// 06 #15：闸门排队是真实发生的——5 个任务在容量 2 下必须串行化
+    #[tokio::test]
+    async fn gate_queues_a_batch_instead_of_blasting_upstream() {
+        let _sb = Sandbox::new();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(60))
+                    .set_body_json(serde_json::json!({
+                        "choices": [{"message": {"content": "ok"}}]
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = Arc::new(AppState::new());
+        *state.config.lock().unwrap() = app_cfg(
+            vec![provider(
+                "mock",
+                &format!("{}/v1", server.uri()),
+                "sk-TEST-key",
+                &["text"],
+                &["m"],
+            )],
+            &[("text", "mock")],
+        );
+
+        let started = Instant::now();
+        let jobs = (0..5).map(|_| {
+            let state = state.clone();
+            async move {
+                let (cfg, _pid, m) = state.resolved("text", None, None).unwrap();
+                let _permit = state.acquire(&CancellationToken::new()).await.unwrap();
+                generate_text_api(
+                    &state.client,
+                    &cfg,
+                    "hi",
+                    m.as_deref().unwrap(),
+                    &TextOptions::default(),
+                    &CancellationToken::new(),
+                    FAST,
+                )
+                .await
+            }
+        });
+        futures_util::future::join_all(jobs).await;
+        let elapsed = started.elapsed();
+        // 容量 2 × 60ms：5 条至少三轮 ≈ 180ms；若毫无排队则只会花 ~60ms
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "看不到排队迹象，闸门可能没生效: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(5), "排队过头: {elapsed:?}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 5);
     }
 
     /// 03 §8：并发闸门真的卡住超额请求，而不是只装饰

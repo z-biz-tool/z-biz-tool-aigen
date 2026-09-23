@@ -26,7 +26,7 @@ export default function VideoGenPanel() {
   const [prompt, setPrompt] = usePrompt("video");
   const [duration, setDuration] = useState("5");
   const [resolution, setResolution] = useState("1080p");
-  const { loading, result, error, progress, submit, pollVideo, cancel } = useTask("video");
+  const { loading, result, error, progress, submit, cancel } = useTask("video");
   const openConfig = useAIGenStore((s) => s.openConfig);
   const src = (result as string | null) ?? "";
   const polledRef = useRef<string | null>(null);
@@ -37,7 +37,7 @@ export default function VideoGenPanel() {
       return;
     }
     polledRef.current = null;
-    void submit("video", "generate_video", { prompt, duration, resolution });
+    void submit("video", { prompt, params: { duration, resolution } });
   };
 
   // B2 / T-B2：上游只回任务号时自动转入轮询，进度走 aigen://progress/{requestId}
@@ -45,8 +45,8 @@ export default function VideoGenPanel() {
     if (!src.startsWith("task:")) return;
     if (polledRef.current === src) return;
     polledRef.current = src;
-    void pollVideo(src.slice(5));
-  }, [src, pollVideo]);
+    void submit("video", { prompt: "", params: { taskId: src.slice(5) } }, { keepResult: true });
+  }, [src, submit]);
 
   const renderResult = () => {
     if (src.startsWith("task:")) {
@@ -54,7 +54,7 @@ export default function VideoGenPanel() {
         <Space direction="vertical" align="center" style={{ width: "100%" }} size="middle">
           <EmptyState title="任务已提交，正在等待上游出片" description={`任务号 ${src.slice(5)}`} />
           {progress ? (
-            <Progress percent={progress.percent} status="active" style={{ width: 320 }} />
+            <Progress percent={progress.percent ?? 0} status="active" style={{ width: 320 }} />
           ) : (
             <Spin />
           )}

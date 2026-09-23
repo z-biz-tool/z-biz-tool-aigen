@@ -46,373 +46,75 @@ fn start_task<'a>(state: &'a AppState, request_id: &str) -> (CancellationToken, 
     )
 }
 
-fn record_params(
-    items: &[(&str, serde_json::Value)],
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for (k, v) in items {
-        map.insert((*k).to_string(), v.clone());
-    }
-    map
+/// `submit_generation` 的应答：任务在后台跑，前端靠事件与 `get_generation` 跟进。
+/// 必须 camelCase：前端 `jobClient` 读的是 `ack.requestId`，
+/// 之前这里是 `request_id`，导致前端拿到 undefined、监听 `aigen://state/undefined`，
+/// **所有任务事件全部丢失**（只有真壳 E2E 抓得到，vitest 用的是自己写的假形状）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitAck {
+    pub request_id: String,
 }
 
-/// 写入历史。失败只在日志留痕，不让已成功的生成结果对用户变成失败。
-fn commit_record(state: &AppState, record: Record) {
-    if let Err(e) = state
-        .history
+#[tauri::command]
+pub async fn submit_generation(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    req: crate::job::GenerationRequest,
+) -> Result<SubmitAck, GenError> {
+    use tauri::{Emitter, Manager};
+
+    let request_id = crate::job::new_id();
+    let token = CancellationToken::new();
+    state
+        .tasks
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(record)
-    {
-        eprintln!("[aigen] 历史落盘失败（{}）: {}", e.code, e.message);
-    }
-}
+        .insert(request_id.clone(), token.clone());
+    state
+        .jobs
+        .put(crate::job::GenerationState::new(&request_id, &req.kind));
 
-/// AI图片生成命令（T-B1：model/size 透传上游；T-Provider：按能力路由）
-#[tauri::command]
-pub async fn generate_image(
-    state: State<'_, AppState>,
-    request_id: String,
-    prompt: String,
-    count: Option<u32>,
-    model: Option<String>,
-    size: Option<String>,
-    provider_id: Option<String>,
-) -> Result<Vec<String>, GenError> {
-    let (token, _guard) = start_task(&state, &request_id);
-    let (cfg, provider, model) =
-        state.resolved("image", provider_id.as_deref(), model.as_deref())?;
-    // 03 §8：全局并发闸门，批量提交时靠它排队而不是同时打上游
-    let _permit = state.acquire(&token).await?;
-    let n = count.unwrap_or(1);
-    let urls = ai_client::generate_image_api(
-        &state.client,
-        &cfg,
-        &prompt,
-        n,
-        model.as_deref(),
-        size.as_deref(),
-        &token,
-        ai_client::IMAGE_TIMEOUT,
-    )
-    .await?;
-
-    // B6：base64 / 远端图都落盘成文件，历史只存引用
-    let id = uuid_str();
-    let mut refs = Vec::new();
-    for (i, url) in urls.iter().enumerate() {
-        let saved = if let Some((bytes, ext)) = history::decode_data_url(url) {
-            history::save_result_bytes(&id, i, &ext, &bytes)
-        } else {
-            match ai_client::fetch_bytes(&state.client, url, &token, ai_client::IMAGE_TIMEOUT).await
-            {
-                Ok(bytes) => {
-                    let ext = image_ext(url);
-                    history::save_result_bytes(&id, i, &ext, &bytes)
-                }
-                // 留存失败不推翻生成结果：退化存远端 URL（仍是引用，不是内联）
-                Err(e) => {
-                    eprintln!("[aigen] 图片留存失败，保留远端引用: {}", e.code);
-                    Ok(url.clone())
-                }
-            }
-        };
-        match saved {
-            Ok(r) => refs.push(r),
-            Err(e) => eprintln!("[aigen] 图片写入结果目录失败: {}", e.message),
+    let registry = state.jobs.clone();
+    let id = request_id.clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<AppState>();
+        let st = crate::job::execute(&state, &id, &req, &token, |s| {
+            registry.put(s.clone());
+            let _ = handle.emit(&format!("aigen://state/{id}"), s.clone());
+        })
+        .await;
+        // 收尾即摘取消句柄，避免长会话里 id 表无界增长
+        if let Ok(mut tasks) = state.tasks.lock() {
+            tasks.remove(&id);
         }
-    }
+        let _ = st;
+    });
 
-    commit_record(
-        &state,
-        Record {
-            id,
-            kind: "image".to_string(),
-            prompt: prompt.clone(),
-            model: model.clone(),
-            params: record_params(&[
-                ("count", serde_json::json!(n)),
-                (
-                    "size",
-                    serde_json::json!(size.clone().unwrap_or_else(|| "1024x1024".into())),
-                ),
-                ("provider_id", serde_json::json!(provider)),
-            ]),
-            result_refs: refs,
-            text_result: None,
-            status: "succeeded".to_string(),
-            created_at: history::now_iso8601(),
-            usage: None,
-            favorite: false,
-        },
-    );
-
-    Ok(urls)
+    Ok(SubmitAck { request_id })
 }
 
-/// 从 URL 猜图片扩展名（去掉查询串）
-fn image_ext(url: &str) -> String {
-    let path = url.split_once('?').map(|(p, _)| p).unwrap_or(url);
-    let tail = path.rsplit('/').next().unwrap_or("");
-    match tail.rsplit_once('.') {
-        Some((_, ext))
-            if (2..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
-        {
-            ext.to_ascii_lowercase()
-        }
-        _ => "png".to_string(),
-    }
-}
-
-/// AI文本生成命令
+/// 查单个任务态（用于对账、重开应用后找回、以及事件漏收的兜底）
 #[tauri::command]
-pub async fn generate_text(
+pub async fn get_generation(
     state: State<'_, AppState>,
     request_id: String,
-    prompt: String,
-    model: Option<String>,
-    provider_id: Option<String>,
-    opts: Option<ai_client::TextOptions>,
-) -> Result<String, GenError> {
-    let (token, _guard) = start_task(&state, &request_id);
-    let (cfg, provider, model) =
-        state.resolved("text", provider_id.as_deref(), model.as_deref())?;
-    // 03 §8：全局并发闸门，批量提交时靠它排队而不是同时打上游
-    let _permit = state.acquire(&token).await?;
-    let model_name = model.unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let content = ai_client::generate_text_api(
-        &state.client,
-        &cfg,
-        &prompt,
-        &model_name,
-        &opts.unwrap_or_default(),
-        &token,
-        ai_client::TEXT_TIMEOUT,
-    )
-    .await?;
-
-    commit_record(
-        &state,
-        Record {
-            id: uuid_str(),
-            kind: "text".to_string(),
-            prompt: prompt.clone(),
-            model: Some(model_name),
-            params: record_params(&[("provider_id", serde_json::json!(provider))]),
-            result_refs: vec![],
-            text_result: Some(content.0.clone()),
-            status: "succeeded".to_string(),
-            created_at: history::now_iso8601(),
-            usage: content.1,
-            favorite: false,
-        },
-    );
-
-    Ok(content.0)
+) -> Result<crate::job::GenerationState, GenError> {
+    state.jobs.get(&request_id).ok_or_else(|| {
+        GenError::new(
+            code::INVALID_PARAM,
+            format!("任务 {request_id} 不存在或已被回收"),
+        )
+    })
 }
 
-/// 文本流式生成（T-Stream）。
-///
-/// 增量通过事件 `aigen://stream/{request_id}` 推给前端，命令本身仍返回全文：
-/// 这样取消、错误契约与历史写入都沿用非流式那条路（偏差说明见 05）。
+/// 最近任务列表（面板重挂载时一次性补齐）
 #[tauri::command]
-pub async fn generate_text_stream(
-    app: tauri::AppHandle,
+pub async fn list_generations(
     state: State<'_, AppState>,
-    request_id: String,
-    prompt: String,
-    model: Option<String>,
-    provider_id: Option<String>,
-    opts: Option<ai_client::TextOptions>,
-) -> Result<String, GenError> {
-    use tauri::Emitter;
-
-    let (token, _guard) = start_task(&state, &request_id);
-    let (cfg, provider, model) =
-        state.resolved("text", provider_id.as_deref(), model.as_deref())?;
-    // 03 §8：全局并发闸门，批量提交时靠它排队而不是同时打上游
-    let _permit = state.acquire(&token).await?;
-    let model_name = model.unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let options = opts.unwrap_or_default().normalized()?;
-
-    let topic = request_id.clone();
-    let emitter = move |ev: crate::stream::StreamEvent| {
-        let _ = app.emit(&format!("aigen://stream/{topic}"), ev.clone());
-    };
-
-    let (content, usage) = ai_client::generate_text_stream_api(
-        &state.client,
-        &cfg,
-        &prompt,
-        &model_name,
-        &options,
-        &token,
-        emitter,
-    )
-    .await?;
-
-    commit_record(
-        &state,
-        Record {
-            id: uuid_str(),
-            kind: "text".to_string(),
-            prompt: prompt.clone(),
-            model: Some(model_name),
-            params: record_params(&[
-                ("stream", serde_json::json!(true)),
-                ("provider_id", serde_json::json!(provider)),
-                ("temperature", serde_json::json!(options.temperature)),
-                ("max_tokens", serde_json::json!(options.max_tokens)),
-                ("with_system", serde_json::json!(options.system.is_some())),
-            ]),
-            result_refs: vec![],
-            text_result: Some(content.clone()),
-            status: "succeeded".to_string(),
-            created_at: history::now_iso8601(),
-            usage,
-            favorite: false,
-        },
-    );
-
-    Ok(content)
-}
-
-/// AI视频生成命令
-#[tauri::command]
-pub async fn generate_video(
-    state: State<'_, AppState>,
-    request_id: String,
-    prompt: String,
-    duration: String,
-    resolution: String,
-    provider_id: Option<String>,
-    model: Option<String>,
-) -> Result<String, GenError> {
-    let (token, _guard) = start_task(&state, &request_id);
-    let (cfg, provider, model) =
-        state.resolved("video", provider_id.as_deref(), model.as_deref())?;
-    // 03 §8：全局并发闸门，批量提交时靠它排队而不是同时打上游
-    let _permit = state.acquire(&token).await?;
-    let video_url = ai_client::generate_video_api(
-        &state.client,
-        &cfg,
-        &prompt,
-        &duration,
-        &resolution,
-        &token,
-        ai_client::VIDEO_TIMEOUT,
-    )
-    .await?;
-
-    // B2：异步任务模式下拿到的是 `task:xxx` 占位，标记为 polling 而不是谎报成功
-    let polling = video_url.starts_with("task:");
-    commit_record(
-        &state,
-        Record {
-            id: uuid_str(),
-            kind: "video".to_string(),
-            prompt: prompt.clone(),
-            model,
-            params: record_params(&[
-                ("duration", serde_json::json!(duration)),
-                ("resolution", serde_json::json!(resolution)),
-                ("provider_id", serde_json::json!(provider)),
-            ]),
-            result_refs: vec![video_url.clone()],
-            text_result: None,
-            status: if polling {
-                "polling".to_string()
-            } else {
-                "succeeded".to_string()
-            },
-            created_at: history::now_iso8601(),
-            usage: None,
-            favorite: false,
-        },
-    );
-
-    Ok(video_url)
-}
-
-/// 轮询已提交的视频任务（T-B2）。进度走 `aigen://progress/{request_id}`。
-#[tauri::command]
-pub async fn poll_video(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    request_id: String,
-    task_id: String,
-) -> Result<String, GenError> {
-    use tauri::Emitter;
-
-    let (cfg, _provider, _model) = state.resolved("video", None, None)?;
-    let (token, _guard) = start_task(&state, &request_id);
-    let topic = request_id.clone();
-    ai_client::poll_video_task(
-        &state.client,
-        &cfg,
-        &task_id,
-        &token,
-        ai_client::VIDEO_POLL_INTERVAL,
-        ai_client::VIDEO_POLL_BUDGET,
-        move |percent, stage| {
-            let _ = app.emit(
-                &format!("aigen://progress/{topic}"),
-                serde_json::json!({ "percent": percent, "stage": stage }),
-            );
-        },
-    )
-    .await
-}
-
-/// PPT生成命令
-#[tauri::command]
-pub async fn generate_ppt(
-    state: State<'_, AppState>,
-    request_id: String,
-    topic: String,
-    template: String,
-    slides: u32,
-    outline: Vec<ai_client::PptOutlineItem>,
-    provider_id: Option<String>,
-) -> Result<String, GenError> {
-    let (token, _guard) = start_task(&state, &request_id);
-    let (cfg, provider, model) = state.resolved("ppt", provider_id.as_deref(), None)?;
-    // 03 §8：全局并发闸门，批量提交时靠它排队而不是同时打上游
-    let _permit = state.acquire(&token).await?;
-    let id = uuid_str();
-    let req = ai_client::PptRequest {
-        topic: topic.clone(),
-        template: template.clone(),
-        slides,
-        outline: outline.clone(),
-    };
-    let (abs_path, rel) =
-        ai_client::generate_ppt_file(&state.client, &cfg, &id, &req, model.as_deref(), &token)
-            .await?;
-
-    commit_record(
-        &state,
-        Record {
-            id,
-            kind: "ppt".to_string(),
-            prompt: topic.clone(),
-            model,
-            params: record_params(&[
-                ("slides", serde_json::json!(slides)),
-                ("template", serde_json::json!(template)),
-                ("outline_items", serde_json::json!(outline.len())),
-                ("provider_id", serde_json::json!(provider)),
-            ]),
-            result_refs: vec![rel],
-            text_result: None,
-            status: "succeeded".to_string(),
-            created_at: history::now_iso8601(),
-            usage: None,
-            favorite: false,
-        },
-    );
-
-    Ok(abs_path)
+) -> Result<Vec<crate::job::GenerationState>, GenError> {
+    Ok(state.jobs.snapshot())
 }
 
 /// 中止进行中的生成任务（T-C3）。返回 false 表示该 request_id 已不在跑。
@@ -970,37 +672,8 @@ mod tests {
     }
 
     #[test]
-    fn commit_record_persists_across_state_rebuild() {
-        let _sb = Sandbox::new();
-        let state = AppState::new();
-        commit_record(
-            &state,
-            Record {
-                id: "r1".into(),
-                kind: "text".into(),
-                prompt: "写一首诗".into(),
-                model: Some("gpt-4o".into()),
-                params: serde_json::Map::new(),
-                result_refs: vec![],
-                text_result: Some("床前明月光".into()),
-                status: "succeeded".into(),
-                created_at: history::now_iso8601(),
-                usage: None,
-                favorite: false,
-            },
-        );
-        // 新建 AppState == 重启进程
-        let reopened = AppState::new();
-        let store = reopened.history.lock().unwrap();
-        assert_eq!(store.len(), 1);
-        assert_eq!(
-            store.records()[0].text_result.as_deref(),
-            Some("床前明月光")
-        );
-    }
-
-    #[test]
     fn image_ext_falls_back_safely() {
+        use crate::job::image_ext;
         assert_eq!(image_ext("https://cdn/x/y.PNG?v=1"), "png");
         assert_eq!(image_ext("https://cdn/y.webp"), "webp");
         assert_eq!(image_ext("https://cdn/noext"), "png");
@@ -1012,5 +685,107 @@ mod tests {
         let _sb = Sandbox::new();
         assert!(!data_dir_path().is_empty());
         assert!(std::path::Path::new(&data_dir_path()).is_absolute());
+    }
+}
+
+#[cfg(test)]
+mod ipc_shape_tests {
+    use super::*;
+
+    /// serde_json 的 map 是有序的，所以只比"键集合"，不比声明顺序
+    fn keys_of<T: serde::Serialize>(v: &T) -> Vec<String> {
+        let mut k: Vec<String> = serde_json::to_value(v)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        k.sort();
+        k
+    }
+
+    fn expect_keys(actual: Vec<String>, mut want: Vec<&str>) {
+        let want: Vec<String> = {
+            want.sort();
+            want.into_iter().map(str::to_string).collect()
+        };
+        assert_eq!(actual, want);
+    }
+
+    /// 前端按字段名直读这些载荷，键名必须逐字对齐（camelCase 的地方不能漏）
+    #[test]
+    fn frontend_facing_payloads_use_the_keys_the_ui_reads() {
+        let ack = SubmitAck {
+            request_id: "job-1".into(),
+        };
+        assert_eq!(
+            keys_of(&ack),
+            vec!["requestId".to_string()],
+            "SubmitAck 形状变了，前端会拿到 undefined"
+        );
+
+        let page = HistoryPage {
+            items: vec![],
+            total: 0,
+            stored: 1,
+            dropped_lines: 2,
+        };
+        expect_keys(
+            keys_of(&page),
+            vec!["items", "total", "stored", "dropped_lines"],
+        );
+
+        let exported = crate::export::Exported {
+            path: "/tmp/a.png".into(),
+            bytes: 12,
+            source: "file".into(),
+        };
+        expect_keys(keys_of(&exported), vec!["path", "bytes", "source"]);
+
+        let templates = TemplatePage {
+            items: vec![],
+            corrupted: 0,
+        };
+        expect_keys(keys_of(&templates), vec!["items", "corrupted"]);
+
+        let view = crate::ai_client::ProvidersView {
+            providers: vec![],
+            active: Default::default(),
+        };
+        expect_keys(keys_of(&view), vec!["providers", "active"]);
+
+        let provider = crate::ai_client::PublicProvider {
+            id: "oa".into(),
+            name: "OpenAI".into(),
+            base_url: "https://a/v1".into(),
+            capabilities: vec![],
+            models: vec![],
+            has_key: true,
+            key_masked: Some("sk-****1".into()),
+        };
+        expect_keys(
+            keys_of(&provider),
+            vec![
+                "id",
+                "name",
+                "base_url",
+                "capabilities",
+                "models",
+                "has_key",
+                "key_masked",
+            ],
+        );
+
+        let reply = crate::assistant::AssistantReply {
+            suggestions: vec![],
+            rewritten: None,
+            heuristic_only: true,
+            usage: None,
+        };
+        expect_keys(
+            keys_of(&reply),
+            vec!["suggestions", "rewritten", "heuristic_only", "usage"],
+        );
     }
 }

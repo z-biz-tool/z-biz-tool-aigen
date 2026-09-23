@@ -70,6 +70,12 @@ pub fn master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
     Ok(key)
 }
 
+/// 故障注入开关（06 #13）：子进程跑测试二进制时设这个环境变量，
+/// atomic_write 会在 rename 之前 abort，用来证明"崩溃只留下 .tmp，绝不留下半截正式文件"。
+fn crash_before_rename() -> bool {
+    std::env::var_os("AIGEN_TEST_CRASH_BEFORE_RENAME").is_some()
+}
+
 /// 同目录临时文件 + fsync + rename：崩溃后要么旧值要么新值（04 §5）。
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path
@@ -92,6 +98,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         f.sync_all().map_err(|e| format!("刷盘失败: {}", e))?;
     }
     restrict_perms(&tmp);
+    if crash_before_rename() {
+        // 故障注入：模拟在 fsync 之后、rename 之前被 kill -9
+        eprintln!("AIGEN_FI: aborting before rename (tmp left behind)");
+        std::process::abort();
+    }
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("原子替换失败: {}", e)
@@ -258,6 +269,71 @@ mod tests {
             master_key(dir.path()).unwrap(),
             k1,
             "master key must be stable"
+        );
+    }
+
+    /// 故障注入的**辅助用例**：只在带 `AIGEN_TEST_CRASH_BEFORE_RENAME` 的子进程里有意义，
+    /// 它会在 rename 之前 abort，所以永远跑不完。
+    #[test]
+    fn fi_helper_aborts_mid_write() {
+        if std::env::var_os("AIGEN_TEST_CRASH_BEFORE_RENAME").is_none() {
+            return; // 正常测试运行里直接跳过
+        }
+        let path = config_path();
+        let _ = atomic_write(&path, br#"{"version":3,"providers":[{"id":"x","name":"x","base_url":"https://a/v1","api_key":"sk-TEST"}],"active":{}}"#);
+        panic!("fail point 没触发：不该走到这里");
+    }
+
+    /// 06 #13：写入中途被 kill，配置文件不能损坏（要么旧值要么新值，且不能出现半截 JSON）
+    #[test]
+    fn crash_between_tmp_and_rename_leaves_previous_file_intact() {
+        let _sb = crate::secret::test_sandbox::Sandbox::new();
+        let dir = data_dir();
+        let target = config_path();
+        let previous = r#"{"version":3,"providers":[],"active":{}}"#;
+        atomic_write(&target, previous.as_bytes()).unwrap();
+
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "secret::tests::fi_helper_aborts_mid_write",
+                "--nocapture",
+            ])
+            .env("AIGEN_DATA_DIR", &dir)
+            .env("AIGEN_TEST_CRASH_BEFORE_RENAME", "1")
+            .output()
+            .expect("需要能启动子进程");
+        assert!(!out.status.success(), "子进程应在 rename 前 abort");
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(stderr.contains("AIGEN_FI"), "没走到注入点：{stderr}");
+
+        // 正式文件必须还是完整的旧内容
+        let after = fs::read_to_string(&target).unwrap();
+        assert_eq!(after, previous, "崩溃破坏了正式文件");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&after).expect("崩溃后配置不再是合法 JSON");
+        assert_eq!(parsed["version"].as_u64(), Some(3));
+
+        // 允许留下 .tmp 残留（这正是原子写的代价），但它绝不能就是目标文件的内容
+        let tmp = dir.join("config.json.tmp");
+        if tmp.exists() {
+            assert_ne!(
+                fs::read_to_string(&tmp).unwrap(),
+                after,
+                "tmp 与目标同内容说明没写新数据"
+            );
+        }
+
+        // 恢复能力：再写一次必须成功，并且不留残留
+        atomic_write(
+            &target,
+            r#"{"version":3,"providers":[],"active":{"text":"x"}}"#.as_bytes(),
+        )
+        .unwrap_or_else(|e| panic!("崩溃后无法再写：{e}"));
+        assert!(!tmp.exists(), "残留 .tmp 未被下次写入清理");
+        assert_eq!(
+            fs::read_to_string(&target).unwrap().matches("text").count(),
+            1
         );
     }
 

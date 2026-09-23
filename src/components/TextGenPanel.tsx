@@ -98,15 +98,16 @@ export default function TextGenPanel() {
       message.warning("请输入内容");
       return;
     }
-    void submit("text", "generate_text_stream", {
+    void submit("text", {
       prompt,
       model,
-      opts: {
+      params: {
+        stream: true,
         system: system.trim() || null,
         temperature,
         maxTokens,
       },
-    }, { stream: true });
+    });
   };
 
   const handleCopy = () => {

@@ -26,9 +26,10 @@ export default function PptGenPanel() {
   const [template, setTemplate] = useState("business");
   const [slides, setSlides] = useState(10);
   const [outline, setOutline] = useState<OutlineItem[]>([{ id: 1, title: "", content: "" }]);
-  const { loading, result, error, submit, cancel } = useTask("ppt");
+  const { loading, result, error, refs, submit, cancel } = useTask("ppt");
   const openConfig = useAIGenStore((s) => s.openConfig);
   const path = (result as string | null) ?? "";
+  const artifactCount = Array.isArray(refs) ? refs.length : 0;
 
   const addOutlineItem = () => {
     setOutline([...outline, { id: Date.now(), title: "", content: "" }]);
@@ -47,7 +48,7 @@ export default function PptGenPanel() {
       message.warning("请输入PPT主题");
       return;
     }
-    void submit("ppt", "generate_ppt", { topic, template, slides, outline });
+    void submit("ppt", { prompt: topic, params: { template, slides, outline } });
   };
 
   const renderResult = () => {
@@ -74,7 +75,9 @@ export default function PptGenPanel() {
           复制路径
         </Button>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          要另存到指定目录：打开「生成历史」，在这条记录上点导出（.html）
+          {artifactCount > 0
+            ? `同时产出 ${artifactCount} 个文件：.pptx（可交付）与 .html（预览用），在「生成历史」里可导出到任意目录`
+            : "打开「生成历史」可导出到任意目录"}
         </Text>
       </Space>
     );

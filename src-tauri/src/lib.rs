@@ -4,6 +4,8 @@ mod commands;
 mod error;
 mod export;
 mod history;
+mod job;
+pub mod pptx;
 mod secret;
 mod stream;
 mod templates;
@@ -18,12 +20,9 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            commands::generate_image,
-            commands::generate_text,
-            commands::generate_text_stream,
-            commands::generate_video,
-            commands::poll_video,
-            commands::generate_ppt,
+            commands::submit_generation,
+            commands::get_generation,
+            commands::list_generations,
             commands::cancel_generation,
             commands::list_history,
             commands::delete_history,

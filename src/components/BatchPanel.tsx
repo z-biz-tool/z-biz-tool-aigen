@@ -35,9 +35,9 @@ import { useBatchStore, type BatchItem } from "../stores/batchStore";
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
 
-const KINDS: { value: GenKind; label: string; cmd: string }[] = [
-  { value: "text", label: "文本写作", cmd: "generate_text" },
-  { value: "image", label: "图片生成", cmd: "generate_image" },
+const KINDS: { value: GenKind; label: string }[] = [
+  { value: "text", label: "文本写作" },
+  { value: "image", label: "图片生成" },
 ];
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
@@ -95,11 +95,11 @@ export default function BatchPanel() {
       okText: "开始批量",
       cancelText: "取消",
       onOk: () => {
-        const args =
+        const params =
           kind === "image"
             ? { count: 1, size: "1024x1024", model }
-            : { model, opts: { temperature: 0.7, maxTokens: 1024 } };
-        start(kind, spec.cmd, prompts, args);
+            : { model, temperature: 0.7, maxTokens: 1024 };
+        start(kind, prompts, params);
       },
     });
   };

@@ -61,7 +61,7 @@ export default function ImageGenPanel() {
       message.warning("请输入提示词");
       return;
     }
-    void submit("image", "generate_image", { prompt, count, model, size });
+    void submit("image", { prompt, model, params: { count, size } });
   };
 
   // H2：不再依赖 `<a download>` 在 webview 里的不确定行为，改走 dialog + Rust 落盘

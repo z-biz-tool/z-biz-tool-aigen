@@ -1,145 +1,233 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useBatchStore } from "./batchStore";
+import type { GenerationState } from "../_shared/jobClient";
 
 const mockInvoke = invoke as unknown as ReturnType<typeof vi.fn>;
-const flush = async (n = 4) => {
-  for (let i = 0; i < n; i++) await Promise.resolve();
+const mockListen = listen as unknown as ReturnType<typeof vi.fn>;
+
+type Handler = (e: { payload: GenerationState }) => void;
+let handlers: Array<{ event: string; fn: Handler }> = [];
+let seq = 0;
+
+function jobState(id: string, over: Partial<GenerationState> = {}): GenerationState {
+  return {
+    requestId: id,
+    kind: "text",
+    status: "succeeded",
+    model: "gpt-4o",
+    partial: "",
+    progress: null,
+    resultRefs: [],
+    preview: [],
+    textResult: null,
+    recordId: `rec-${id}`,
+    usage: null,
+    error: null,
+    createdAt: "2026-09-22T10:00:00Z",
+    updatedAt: "2026-09-22T10:00:05Z",
+    ...over,
+  };
+}
+
+const emit = (id: string, st: GenerationState) =>
+  handlers
+    .filter((h) => h.event === `aigen://state/${id}`)
+    .forEach((h) => h.fn({ payload: st }));
+
+/** 每条 prompt 分配一个 requestId，事件由测试自己发出去 */
+function stubJobs(handler?: (req: Record<string, unknown>, id: string) => void) {
+  mockInvoke.mockImplementation((cmd: string, args: { req?: { prompt?: string } }) => {
+    if (cmd === "submit_generation") {
+      const id = `job-${++seq}`;
+      handler?.(args.req as Record<string, unknown>, id);
+      return Promise.resolve({ requestId: id });
+    }
+    if (cmd === "cancel_generation") return Promise.resolve(true);
+    if (cmd === "get_generation")
+      return Promise.reject({ code: "INVALID_PARAM", message: "未就绪", retryable: false });
+    return Promise.reject({ code: "UNKNOWN", message: `ns ${cmd}`, retryable: false });
+  });
+}
+
+/** 等某条进入期望状态（事件是 setTimeout 发来的，需要轮询） */
+const untilStatus = async (
+  pred: (i: import("./batchStore").BatchItem) => boolean,
+  ms = 1500
+) => {
+  const start = Date.now();
+  while (!useBatchStore.getState().items.some(pred) && Date.now() - start < ms)
+    await new Promise((r) => setTimeout(r, 10));
 };
 
+/** 等 store 把 N 条都提交出去 */
+const untilSubmitted = async (n: number, ms = 1500) => {
+  const start = Date.now();
+  while (
+    mockInvoke.mock.calls.filter((c) => c[0] === "submit_generation").length < n &&
+    Date.now() - start < ms
+  )
+    await new Promise((r) => setTimeout(r, 10));
+};
+
+const requests = () =>
+  mockInvoke.mock.calls.filter((c) => c[0] === "submit_generation").map((c) => c[1].req);
+
 beforeEach(() => {
+  seq = 0;
+  handlers = [];
   useBatchStore.setState({ items: [], running: false });
+  mockListen.mockImplementation(async (event: string, fn: Handler) => {
+    handlers.push({ event, fn });
+    return () => {};
+  });
 });
 
-describe("batchStore.start（02 §7 / T-Batch）", () => {
-  it("逐条下发，各自带独立 requestId", async () => {
-    mockInvoke.mockResolvedValue("ok");
-    useBatchStore.getState().start("text", "generate_text", ["a", "b", "c"], { model: "gpt-4o" });
-    await flush();
+describe("batchStore.start（02 §7）", () => {
+  it("逐条提交独立任务，共享参数各自带 prompt", async () => {
+    stubJobs();
+    useBatchStore.getState().start("text", ["a", "b", "c"], { model: "gpt-4o", temperature: 0.4 });
+    await untilSubmitted(3);
 
-    const calls = mockInvoke.mock.calls.filter((c) => c[0] === "generate_text");
-    expect(calls.length).toBe(3);
-    const ids = new Set(calls.map((c) => c[1].requestId));
-    expect(ids.size).toBe(3);
-    expect(calls[0][1]).toMatchObject({ model: "gpt-4o" });
-    expect(calls.map((c) => c[1].prompt)).toEqual(["a", "b", "c"]);
-    expect(useBatchStore.getState().running).toBe(false);
+    const reqs = requests();
+    expect(reqs.length).toBe(3);
+    expect(reqs.map((r) => r.prompt)).toEqual(["a", "b", "c"]);
+    expect(reqs[0]).toMatchObject({ kind: "text", model: "gpt-4o", params: { temperature: 0.4 } });
+    // 三条各自独立 requestId
+    expect(new Set(handlers.map((h) => h.event)).size).toBe(3);
   });
 
-  it("整批共用公共参数，单条提示词各自覆盖 prompt", async () => {
-    mockInvoke.mockResolvedValue(["data:image/png;base64,AA"]);
-    useBatchStore.getState().start("image", "generate_image", ["猫", "狗"], {
-      count: 1,
-      size: "1024x1024",
-    });
-    await flush();
-    const items = useBatchStore.getState().items;
-    expect(items.map((i) => i.status)).toEqual(["succeeded", "succeeded"]);
-    // 数组结果序列化后可导出/预览
-    expect(JSON.parse(items[0].result ?? "[]")).toEqual(["data:image/png;base64,AA"]);
+  it("整批并发不自己限流：一次性全部提交，排队交给后端闸门", async () => {
+    stubJobs();
+    useBatchStore.getState().start("text", Array.from({ length: 6 }, (_, i) => `p${i}`));
+    await untilSubmitted(6);
+    expect(requests().length).toBe(6);
+    expect(useBatchStore.getState().items.every((i) => i.status === "running")).toBe(true);
   });
 
-  it("单条失败不影响其余条目，错误按契约保留", async () => {
-    mockInvoke.mockImplementation(async (_cmd: string, args: { prompt: string }) => {
-      if (args.prompt === "bad") {
-        throw { code: "UPSTREAM_5XX", message: "上游不可用", retryable: true };
+  it("单条失败不影响其余条目", async () => {
+    stubJobs((req, id) => {
+      if (req.prompt === "bad") {
+        setTimeout(() =>
+          emit(id, jobState(id, { status: "failed", error: { code: "TIMEOUT", message: "超时", retryable: true } }))
+        );
+      } else {
+        setTimeout(() => emit(id, jobState(id, { textResult: `ok:${req.prompt}` })));
       }
-      return "good";
     });
-    useBatchStore.getState().start("text", "generate_text", ["ok1", "bad", "ok2"], {});
-    await flush();
+    useBatchStore.getState().start("text", ["ok1", "bad", "ok2"]);
+    const untilDone = async () => {
+      const start = Date.now();
+      while (
+        useBatchStore.getState().items.some((i) => i.status === "running" || i.status === "queued") &&
+        Date.now() - start < 2000
+      )
+        await new Promise((r) => setTimeout(r, 10));
+    };
+    await untilDone();
 
     const items = useBatchStore.getState().items;
     expect(items.map((i) => i.status)).toEqual(["succeeded", "failed", "succeeded"]);
-    expect(items[1].error?.code).toBe("UPSTREAM_5XX");
-    expect(items[1].error?.retryable).toBe(true);
+    expect(items[1].error?.code).toBe("TIMEOUT");
+    expect(items[0].result).toBe("ok:ok1");
     expect(useBatchStore.getState().succeeded()).toBe(2);
+    expect(useBatchStore.getState().running).toBe(false);
+    expect(items[0].durationMs).not.toBeNull();
   });
 
-  it("耗时被记录，便于判断是否真的跑完", async () => {
-    mockInvoke.mockImplementation(
-      () => new Promise((r) => setTimeout(() => r("x"), 10))
+  it("重试只重跑那一条，并沿用它的参数", async () => {
+    stubJobs((req, id) =>
+      setTimeout(() =>
+        emit(
+          id,
+          req.prompt === "bad"
+            ? jobState(id, { status: "failed", error: { code: "RATE_LIMIT", message: "限流", retryable: true } })
+            : jobState(id, { textResult: "好" })
+        )
+      )
     );
-    useBatchStore.getState().start("text", "generate_text", ["一条"], {});
-    await new Promise((r) => setTimeout(r, 60));
-    expect(useBatchStore.getState().items[0].durationMs).toBeGreaterThan(0);
-  });
-});
+    useBatchStore.getState().start("text", ["ok", "bad"], { model: "m1" });
+    await untilStatus((i) => i.status === "failed");
+    const failedKey = useBatchStore.getState().items.find((i) => i.status === "failed")!.key;
+    const before = requests().length;
 
-describe("重试与取消", () => {
-  const seed = async () => {
-    mockInvoke.mockImplementation(async (_cmd: string, args: { prompt: string }) => {
-      if (args.prompt === "bad") throw { code: "TIMEOUT", message: "超时", retryable: true };
-      return "good";
-    });
-    useBatchStore.getState().start("text", "generate_text", ["ok", "bad"], {});
-    await flush();
-  };
-
-  it("retry 只重跑那一条，并可转成功", async () => {
-    await seed();
-    const failed = useBatchStore.getState().items.find((i) => i.status === "failed")!;
-    expect(failed.prompt).toBe("bad");
-
-    mockInvoke.mockResolvedValue("重试后的结果");
-    const before = mockInvoke.mock.calls.length;
-    useBatchStore.getState().retry(failed.key);
-    await flush();
-
-    expect(mockInvoke.mock.calls.length - before).toBe(1);
-    const after = useBatchStore.getState().items.find((i) => i.key === failed.key)!;
-    expect(after.status).toBe("succeeded");
-    expect(after.result).toBe("重试后的结果");
-    // 另一条不受影响
-    expect(useBatchStore.getState().items.find((i) => i.prompt === "ok")?.result).toBe("good");
-  });
-
-  it("retry 沿用整批的公共参数", async () => {
-    useBatchStore.getState().start("text", "generate_text", ["p1"], { model: "abab6.5s-chat" });
-    await flush();
     mockInvoke.mockClear();
-    useBatchStore.getState().retry(useBatchStore.getState().items[0].key);
-    await flush();
-    expect(mockInvoke.mock.calls[0][1]).toMatchObject({ model: "abab6.5s-chat", prompt: "p1" });
+    stubJobs((_req, id) => setTimeout(() => emit(id, jobState(id, { textResult: "重试后成功" }))));
+    useBatchStore.getState().retry(failedKey);
+    await untilSubmitted(1);
+
+    expect(requests().length).toBe(1);
+    expect(requests()[0]).toMatchObject({ prompt: "bad", model: "m1" });
+    await untilStatus((i) => i.key === failedKey && i.status === "succeeded");
+    expect(useBatchStore.getState().items.find((i) => i.key === failedKey)?.result).toBe("重试后成功");
+    // 另一条没被重跑
+    expect(requests().length).toBe(1);
+    expect(before).toBe(2);
   });
 
-  it("cancel 用该条自己的 requestId", async () => {
-    let pending!: (v: string) => void;
-    mockInvoke.mockImplementation(() => new Promise((r) => (pending = r)));
-    useBatchStore.getState().start("text", "generate_text", ["第一条", "第二条"], {});
-    await flush();
+  it("取消单条：只发它自己的 requestId，别条不受影响", async () => {
+    stubJobs();
+    useBatchStore.getState().start("text", ["a", "b"]);
+    await untilSubmitted(2);
+    const target = useBatchStore.getState().items[0];
+    const targetEvent = handlers[0].event;
 
-    const first = useBatchStore.getState().items[0];
-    const idOfFirst = mockInvoke.mock.calls
-      .filter((c) => c[0] === "generate_text")
-      .map((c) => c[1].requestId)[0];
-    useBatchStore.getState().cancel(first.key);
-
-    const after = useBatchStore.getState().items[0];
-    expect(after.status).toBe("cancelled");
-    expect(after.requestId).toBeNull();
-    const cancelCall = mockInvoke.mock.calls.find((c) => c[0] === "cancel_generation");
-    expect(cancelCall?.[1]).toEqual({ requestId: idOfFirst });
-
-    pending("late");
-    await flush();
+    useBatchStore.getState().cancel(target.key);
     expect(useBatchStore.getState().items[0].status).toBe("cancelled");
+    const cancelCall = mockInvoke.mock.calls.find((c) => c[0] === "cancel_generation");
+    expect(cancelCall?.[1].requestId).toBe(targetEvent.replace("aigen://state/", ""));
+    expect(handlers[1].event).not.toBe(targetEvent);
+    expect(useBatchStore.getState().items[1].status).toBe("running");
   });
 
-  it("cancelAll 取消全部在途条目并解锁界面", async () => {
-    mockInvoke.mockImplementation(() => new Promise(() => {}));
-    useBatchStore.getState().start("text", "generate_text", ["a", "b", "c"], {});
-    await flush();
-    expect(useBatchStore.getState().running).toBe(true);
-
+  it("cancelAll 取消全部在途并解锁整批", async () => {
+    stubJobs();
+    useBatchStore.getState().start("text", ["a", "b", "c"]);
+    await untilSubmitted(3);
     useBatchStore.getState().cancelAll();
+
     const s = useBatchStore.getState();
     expect(s.running).toBe(false);
     expect(s.items.every((i) => i.status === "cancelled")).toBe(true);
     expect(s.finished()).toBe(3);
     expect(mockInvoke.mock.calls.filter((c) => c[0] === "cancel_generation").length).toBe(3);
+  });
+
+  it("迟到的终态不会覆盖用户刚点掉的清空/取消", async () => {
+    let lateId = "";
+    stubJobs((_req, id) => {
+      lateId = id;
+    });
+    useBatchStore.getState().start("text", ["x"]);
+    await untilSubmitted(1);
+    useBatchStore.getState().cancel(useBatchStore.getState().items[0].key);
+    useBatchStore.getState().clear();
+
+    emit(lateId, jobState(lateId, { textResult: "迟到的结果" }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(useBatchStore.getState().items).toEqual([]);
+  });
+
+  it("图片结果落到 preview 拼接，便于展示/导出", async () => {
+    stubJobs((_req, id) =>
+      setTimeout(() =>
+        emit(id, jobState(id, { kind: "image", preview: ["https://cdn/a.png", "https://cdn/b.png"] }))
+      )
+    );
+    useBatchStore.getState().start("image", ["猫"], { count: 2 });
+    await untilSubmitted(1);
+    const start = Date.now();
+    while (useBatchStore.getState().items[0]?.status === "running" && Date.now() - start < 2000)
+      await new Promise((r) => setTimeout(r, 10));
+
+    const item = useBatchStore.getState().items[0];
+    expect(item.status).toBe("succeeded");
+    expect(item.result).toBe("https://cdn/a.png\nhttps://cdn/b.png");
+    expect(item.params).toEqual({ count: 2 });
   });
 });
