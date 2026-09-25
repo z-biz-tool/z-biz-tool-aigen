@@ -24,36 +24,13 @@ pub struct ReferenceImage {
     pub source: String,
 }
 
-fn sniff(buf: &[u8]) -> Option<&'static str> {
-    if buf.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("png")
-    } else if buf.starts_with(b"\xff\xd8\xff") {
-        Some("jpg")
-    } else if buf.starts_with(b"GIF87a") || buf.starts_with(b"GIF89a") {
-        Some("gif")
-    } else if buf.len() >= 12 && &buf[..4] == b"RIFF" && &buf[8..12] == b"WEBP" {
-        Some("webp")
-    } else {
-        None
-    }
-}
-
-fn mime_of(ext: &str) -> &'static str {
-    match ext {
-        "png" => "image/png",
-        "jpg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        _ => "application/octet-stream",
-    }
-}
+// 魔数嗅探 / MIME 映射 / data URL 编码都是纯逻辑，走能力层 cap-img 0.2.0。
+// 本文件只保留**信任边界**：symlink 不跟随、大小上限、来源白名单。
 
 fn encode(bytes: Vec<u8>, ext: &str, source: &str) -> ReferenceImage {
-    use base64::Engine;
     let len = bytes.len();
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     ReferenceImage {
-        data_url: format!("data:{};base64,{}", mime_of(ext), b64),
+        data_url: cap_img::encode_data_url(&bytes, cap_img::mime_for_ext(ext)),
         bytes: len,
         ext: ext.to_string(),
         source: source.to_string(),
@@ -98,7 +75,7 @@ pub fn from_path(path: &str) -> Result<ReferenceImage, GenError> {
         ));
     }
     let bytes = std::fs::read(p).map_err(|e| GenError::storage(shorten(&e.to_string())))?;
-    let ext = sniff(&bytes).ok_or_else(|| {
+    let ext = cap_img::sniff_format(&bytes).ok_or_else(|| {
         GenError::new(
             code::INVALID_PARAM,
             "只支持 PNG / JPEG / WEBP / GIF 参考图（按文件头判断，不看扩展名）",
@@ -127,7 +104,7 @@ pub fn from_record(record: &Record, ref_index: Option<usize>) -> Result<Referenc
     let abs = history::Store::resolve_ref(rel);
     let bytes = std::fs::read(&abs)
         .map_err(|e| GenError::storage(format!("读取历史结果失败：{}", shorten(&e.to_string()))))?;
-    let ext = sniff(&bytes)
+    let ext = cap_img::sniff_format(&bytes)
         .ok_or_else(|| GenError::new(code::STORAGE, "历史结果文件已损坏或不是可识别的图片"))?;
     Ok(encode(bytes, ext, "record"))
 }
@@ -141,14 +118,14 @@ mod tests {
 
     #[test]
     fn sniffs_by_magic_not_extension() {
-        assert_eq!(sniff(PNG), Some("png"));
-        assert_eq!(sniff(JPEG), Some("jpg"));
-        assert_eq!(sniff(b"GIF89a.."), Some("gif"));
+        assert_eq!(cap_img::sniff_format(PNG), Some("png"));
+        assert_eq!(cap_img::sniff_format(JPEG), Some("jpg"));
+        assert_eq!(cap_img::sniff_format(b"GIF89a.."), Some("gif"));
         let mut webp = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
         webp[4..8].copy_from_slice(&12u32.to_le_bytes());
-        assert_eq!(sniff(&webp), Some("webp"));
+        assert_eq!(cap_img::sniff_format(&webp), Some("webp"));
         // 改扩展名没用
-        assert_eq!(sniff(b"\x00\x01binary"), None);
+        assert_eq!(cap_img::sniff_format(b"\x00\x01binary"), None);
     }
 
     #[test]

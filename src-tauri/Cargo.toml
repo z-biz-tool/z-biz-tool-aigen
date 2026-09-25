@@ -26,6 +26,8 @@ tokio-util = "0.7"
 futures-util = "0.3"
 chacha20poly1305 = "0.10"
 base64 = "0.22"
+# 能力层：魔数嗅探 / data URL 编解码 / MIME 映射（纯逻辑，信任边界仍在本仓）
+cap-img = "0.2.0"
 # 真 .pptx 产物：OOXML 就是 zip 包（T-B3）
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # B5：历史时间戳改可读 ISO8601（05 T-C1 许可的依赖）

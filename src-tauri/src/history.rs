@@ -11,8 +11,7 @@
 use crate::error::GenError;
 // 历史与结果文件共用同一套原子写与数据目录约定
 pub use crate::secret::{atomic_write, data_dir};
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine as _;
+// base64 编解码已下沉到 cap-img（decode_data_url / encode_data_url），本仓不再直接依赖
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -107,23 +106,15 @@ pub fn save_result_bytes(
 }
 
 /// 从 `data:image/png;base64,....` 解出字节与扩展名
+///
+/// 解析逻辑在能力层 cap-img 0.2.0（`decode_data_url` + `ext_for_mime`），
+/// 这里只保留 aigen 侧的签名 `(bytes, ext)`，三个调用方不用改。
+/// 与旧实现的唯一差异：payload 无 padding 也能解（旧的直接 None），输入全部来自本仓自产的
+/// data URL（恒带 padding），实际可达面不变。
 pub fn decode_data_url(url: &str) -> Option<(Vec<u8>, String)> {
-    let rest = url.strip_prefix("data:")?;
-    let (meta, payload) = rest.split_once(',')?;
-    if !meta.to_ascii_lowercase().contains("base64") {
-        return None;
-    }
-    let mime_ext = meta
-        .split(';')
-        .next()
-        .and_then(|m| m.split_once('/'))
-        .map(|(_, sub)| match sub {
-            "jpeg" | "jpg" => "jpg".to_string(),
-            other => other.split('+').next().unwrap_or("png").to_string(),
-        })
-        .unwrap_or_else(|| "png".to_string());
-    let bytes = B64.decode(payload.trim()).ok()?;
-    Some((bytes, mime_ext))
+    let d = cap_img::decode_data_url(url)?;
+    let ext = cap_img::ext_for_mime(&d.mime);
+    Some((d.bytes, ext))
 }
 
 /// 文件是否停在"没有换行结尾"的状态（即上一行是被截断的）。
