@@ -3,6 +3,7 @@ name = "z-biz-tool-aigen"
 version = "0.2.0"
 description = "AI内容制造工厂"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "z_biz_tool_aigen_lib"
