@@ -16,6 +16,8 @@ import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined, C
 import { EmptyState, LoadingState, ErrorState } from "../_shared";
 import { exportResult, EXPORT_FILTERS, stamp } from "../_shared/export";
 import { useTask, usePrompt } from "../stores/generationStore";
+import { useFormField } from "../stores/uiStore";
+import { hotkeyLabel, useHotkeyScope } from "../_shared/hotkeys";
 import { useAIGenStore, useModelOptions } from "../stores/aiStore";
 import { isBodyVariable, useTemplateStore } from "../stores/templateStore";
 import TemplateManager from "./TemplateManager";
@@ -44,10 +46,11 @@ const sizes = [
 
 export default function ImageGenPanel() {
   const [prompt, setPrompt] = usePrompt("image");
-  const [count, setCount] = useState(1);
-  const [model, setModel] = useState("dall-e-3");
-  const [size, setSize] = useState("1024x1024");
-  const [negative, setNegative] = useState("");
+  // 参数进持久化草稿：重启后回到上次那组 size/count
+  const [count, setCount] = useFormField("image", "count");
+  const [model, setModel] = useFormField("image", "model");
+  const [size, setSize] = useFormField("image", "size");
+  const [negative, setNegative] = useFormField("image", "negative");
   const [managing, setManaging] = useState(false);
   const refImage = useReferenceStore((s) => s.image);
   const refLabel = useReferenceStore((s) => s.label);
@@ -127,6 +130,19 @@ export default function ImageGenPanel() {
     navigator.clipboard.writeText(url);
     message.success("已复制图片 URL");
   };
+
+  // 全局键位在这一页的落点：⌘⏎ 生成、⌘. 取消、⌘S 导出本轮第一张
+  useHotkeyScope({
+    generate: () => void handleGenerate(),
+    cancel,
+    export: () => {
+      if (!images.length) {
+        message.info("还没有可导出的图片");
+        return;
+      }
+      void handleExport(images[0], 0);
+    },
+  });
 
   const renderResult = () => {
     if (loading) return <LoadingState tip="AI 正在绘制中..." onCancel={cancel} />;
@@ -362,6 +378,9 @@ export default function ImageGenPanel() {
                 }}
               >
                 生成图片
+                <span style={{ opacity: 0.72, fontSize: 11, marginLeft: 6 }}>
+                  {hotkeyLabel("generate")}
+                </span>
               </Button>
             )}
           </Space>

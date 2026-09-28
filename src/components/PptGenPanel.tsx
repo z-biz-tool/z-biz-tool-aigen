@@ -1,18 +1,13 @@
-import { useState } from "react";
 import { Card, Input, Button, Space, Select, Typography, List, InputNumber, message } from "antd";
 import { FilePptOutlined, PlusOutlined, DeleteOutlined, CopyOutlined, CloseCircleOutlined } from "@ant-design/icons";
 import { EmptyState, LoadingState, ErrorState } from "../_shared";
 import { useTask, usePrompt } from "../stores/generationStore";
+import { useFormField } from "../stores/uiStore";
+import { hotkeyLabel, useHotkeyScope } from "../_shared/hotkeys";
 import { useAIGenStore } from "../stores/aiStore";
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
-
-interface OutlineItem {
-  id: number;
-  title: string;
-  content: string;
-}
 
 const templates = [
   { value: "business", label: "商务简约" },
@@ -23,9 +18,10 @@ const templates = [
 
 export default function PptGenPanel() {
   const [topic, setTopic] = usePrompt("ppt");
-  const [template, setTemplate] = useState("business");
-  const [slides, setSlides] = useState(10);
-  const [outline, setOutline] = useState<OutlineItem[]>([{ id: 1, title: "", content: "" }]);
+  const [template, setTemplate] = useFormField("ppt", "template");
+  const [slides, setSlides] = useFormField("ppt", "slides");
+  // 大纲是最典型的「敲了一半」的资产，必须活过重启
+  const [outline, setOutline] = useFormField("ppt", "outline");
   const { loading, result, error, refs, submit, cancel } = useTask("ppt");
   const openConfig = useAIGenStore((s) => s.openConfig);
   const path = (result as string | null) ?? "";
@@ -50,6 +46,18 @@ export default function PptGenPanel() {
     }
     void submit("ppt", { prompt: topic, params: { template, slides, outline } });
   };
+
+  // 全局键位在这一页的落点：⌘⏎ 生成、⌘. 取消；.pptx 的落盘入口在生成历史
+  useHotkeyScope({
+    generate: handleGenerate,
+    cancel,
+    export: () =>
+      message.info(
+        path
+          ? "PPT 已产出 .pptx 与 .html，请在「生成历史」里导出到任意目录"
+          : "还没有可导出的 PPT"
+      ),
+  });
 
   const renderResult = () => {
     if (loading) return <LoadingState tip="AI创作中..." onCancel={cancel} />;
@@ -122,6 +130,9 @@ export default function PptGenPanel() {
                 size="large"
               >
                 生成PPT
+                <span style={{ opacity: 0.72, fontSize: 11, marginLeft: 6 }}>
+                  {hotkeyLabel("generate")}
+                </span>
               </Button>
             )}
           </Space>

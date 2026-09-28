@@ -17,6 +17,7 @@ import {
   type JobArgs,
 } from "../_shared/jobClient";
 import { toGenError, type GenErrorPayload } from "../_shared/genError";
+import { useUiStore } from "./uiStore";
 
 export type GenKind = "image" | "video" | "ppt" | "text";
 
@@ -107,9 +108,15 @@ interface GenerationStore {
   backfill: (kind: GenKind, prompt: string) => void;
 }
 
+/** 提示词草稿来自持久化层（⌘⇧N 之外的丢失也一并修掉） */
+const restoredPrompts = (): Record<GenKind, string> => ({
+  ...EMPTY_PROMPTS,
+  ...useUiStore.getState().prompts,
+});
+
 export const useGenerationStore = create<GenerationStore>((set, get) => ({
   tasks: { image: EMPTY_TASK, video: EMPTY_TASK, ppt: EMPTY_TASK, text: EMPTY_TASK },
-  prompts: EMPTY_PROMPTS,
+  prompts: restoredPrompts(),
 
   submit: async (kind, args) => {
     const started: TaskState = {
@@ -188,13 +195,18 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
 
   reset: (kind) => set((s) => ({ tasks: { ...s.tasks, [kind]: EMPTY_TASK } })),
 
-  setPrompt: (kind, value) => set((s) => ({ prompts: { ...s.prompts, [kind]: value } })),
+  setPrompt: (kind, value) => {
+    set((s) => ({ prompts: { ...s.prompts, [kind]: value } }));
+    useUiStore.getState().setPromptDraft(kind, value);
+  },
 
-  backfill: (kind, prompt) =>
+  backfill: (kind, prompt) => {
     set((s) => ({
       prompts: { ...s.prompts, [kind]: prompt },
       tasks: { ...s.tasks, [kind]: EMPTY_TASK },
-    })),
+    }));
+    useUiStore.getState().setPromptDraft(kind, prompt);
+  },
 }));
 
 /** 面板用：某个 kind 的任务态 + 便捷动作 */

@@ -5,8 +5,7 @@
  * 启动前必须确认「将发起 N 次请求」（04 §8.2 成本控制）。
  */
 
-import { useMemo, useState } from "react";
-import {
+import { useMemo } from "react";import {
   Alert,
   Button,
   Card,
@@ -31,6 +30,8 @@ import {
 import { EXPORT_FILTERS, exportResult, stamp } from "../_shared/export";
 import { useAIGenStore, useModelOptions, type GenKind } from "../stores/aiStore";
 import { useBatchStore, type BatchItem } from "../stores/batchStore";
+import { useFormField } from "../stores/uiStore";
+import { useHotkeyScope } from "../_shared/hotkeys";
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -49,9 +50,11 @@ const STATUS_TAG: Record<string, { color: string; label: string }> = {
 };
 
 export default function BatchPanel() {
-  const [kind, setKind] = useState<GenKind>("text");
-  const [model, setModel] = useState<string | undefined>(undefined);
-  const [raw, setRaw] = useState("");
+  const [kind, setKind] = useFormField("batch", "kind");
+  const [modelRaw, setModelRaw] = useFormField("batch", "model");
+  const [raw, setRaw] = useFormField("batch", "raw");
+  // 表单里"跟随服务商默认"是 undefined，草稿层只能存 string，故在面板侧换算
+  const model = modelRaw || undefined;
   const items = useBatchStore((s) => s.items);
   const running = useBatchStore((s) => s.running);
   const start = useBatchStore((s) => s.start);
@@ -104,6 +107,9 @@ export default function BatchPanel() {
     });
   };
 
+  // 全局键位在这一页的落点：⌘⏎ 仍走「确认后才开跑」那条路径，⌘. 取消整批
+  useHotkeyScope({ generate: () => confirmAndStart(), cancel: () => cancelAll() });
+
   return (
     <div style={{ maxWidth: 980, margin: "0 auto" }}>
       <Card
@@ -136,7 +142,7 @@ export default function BatchPanel() {
               allowClear
               placeholder="模型（默认取服务商第一个）"
               value={model}
-              onChange={setModel}
+              onChange={(v) => setModelRaw(v ?? "")}
               style={{ minWidth: 260 }}
               size="large"
               options={providerModels ?? []}

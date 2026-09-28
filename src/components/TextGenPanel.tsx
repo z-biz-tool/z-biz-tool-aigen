@@ -22,6 +22,8 @@ import {
 import { EmptyState, LoadingState, ErrorState } from "../_shared";
 import { EXPORT_FILTERS, exportResult, stamp } from "../_shared/export";
 import { useTask, usePrompt } from "../stores/generationStore";
+import { useFormField } from "../stores/uiStore";
+import { hotkeyLabel, useHotkeyScope } from "../_shared/hotkeys";
 import { useAIGenStore, useModelOptions } from "../stores/aiStore";
 import {
   isBodyVariable,
@@ -35,10 +37,11 @@ const { Text, Paragraph } = Typography;
 
 export default function TextGenPanel() {
   const [input, setInput] = usePrompt("text");
-  const [model, setModel] = useState("gpt-4o-mini");
-  const [system, setSystem] = useState("");
-  const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState<number | null>(1024);
+  // 参数进持久化草稿：模型/温度/maxTokens 是反复调出来的，不该每次重启归零
+  const [model, setModel] = useFormField("text", "model");
+  const [system, setSystem] = useFormField("text", "system");
+  const [temperature, setTemperature] = useFormField("text", "temperature");
+  const [maxTokens, setMaxTokens] = useFormField("text", "maxTokens");
   const { loading, result, error, partial, submit, cancel } = useTask("text");
   const openConfig = useAIGenStore((s) => s.openConfig);
   // 服务商声明了模型就用它的，避免"选 OpenAI 模型打 MiniMax 端点"（B4）
@@ -114,6 +117,21 @@ export default function TextGenPanel() {
       message.success("已复制到剪贴板");
     }
   };
+
+  const exportCurrent = () => {
+    if (!text) {
+      message.info("还没有可导出的正文");
+      return;
+    }
+    void exportResult({
+      defaultName: `aigen-${stamp()}.md`,
+      filters: EXPORT_FILTERS.text,
+      text,
+    });
+  };
+
+  // 全局键位在这一页的落点：⌘⏎ 生成、⌘. 取消、⌘S 导出
+  useHotkeyScope({ generate: () => void handleGenerate(), cancel, export: exportCurrent });
 
   const renderResult = () => {
     if (loading && partial) {
@@ -314,6 +332,9 @@ export default function TextGenPanel() {
               }}
             >
               生成文本
+              <span style={{ opacity: 0.72, fontSize: 11, marginLeft: 6 }}>
+                {hotkeyLabel("generate")}
+              </span>
             </Button>
           )}
         </Space>

@@ -1,9 +1,10 @@
-import { useState } from "react";
 import { Card, Input, Button, Space, Select, Typography, message, Progress } from "antd";
 import { VideoCameraOutlined, CloseCircleOutlined, DownloadOutlined } from "@ant-design/icons";
 import { EmptyState, LoadingState, ErrorState } from "../_shared";
 import { EXPORT_FILTERS, exportResult, stamp } from "../_shared/export";
 import { useTask, usePrompt } from "../stores/generationStore";
+import { useFormField } from "../stores/uiStore";
+import { hotkeyLabel, useHotkeyScope } from "../_shared/hotkeys";
 import { useAIGenStore } from "../stores/aiStore";
 
 const { TextArea } = Input;
@@ -24,8 +25,8 @@ const resolutions = [
 
 export default function VideoGenPanel() {
   const [prompt, setPrompt] = usePrompt("video");
-  const [duration, setDuration] = useState("5");
-  const [resolution, setResolution] = useState("1080p");
+  const [duration, setDuration] = useFormField("video", "duration");
+  const [resolution, setResolution] = useFormField("video", "resolution");
   const { loading, result, error, progress, submit, cancel } = useTask("video");
   const openConfig = useAIGenStore((s) => s.openConfig);
   const src = (result as string | null) ?? "";
@@ -37,6 +38,21 @@ export default function VideoGenPanel() {
     }
     void submit("video", { prompt, params: { duration, resolution } });
   };
+
+  const exportCurrent = () => {
+    if (!src) {
+      message.info("还没有可导出的视频");
+      return;
+    }
+    void exportResult({
+      defaultName: `aigen-video-${stamp()}.mp4`,
+      filters: EXPORT_FILTERS.video,
+      text: src,
+    });
+  };
+
+  // 全局键位在这一页的落点：⌘⏎ 生成、⌘. 取消等待、⌘S 导出
+  useHotkeyScope({ generate: handleGenerate, cancel, export: exportCurrent });
 
   const renderResult = () => {
     // T-B2：上游只回任务号时，由后端在同一个 job 里轮询，进度以 polling 状态推回来
@@ -66,13 +82,7 @@ export default function VideoGenPanel() {
             type="primary"
             ghost
             icon={<DownloadOutlined />}
-            onClick={() =>
-              void exportResult({
-                defaultName: `aigen-video-${stamp()}.mp4`,
-                filters: EXPORT_FILTERS.video,
-                text: src,
-              })
-            }
+            onClick={exportCurrent}
           >
             导出视频
           </Button>
@@ -126,6 +136,9 @@ export default function VideoGenPanel() {
                 size="large"
               >
                 生成视频
+                <span style={{ opacity: 0.72, fontSize: 11, marginLeft: 6 }}>
+                  {hotkeyLabel("generate")}
+                </span>
               </Button>
             )}
           </Space>

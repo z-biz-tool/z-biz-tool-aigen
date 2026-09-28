@@ -2,7 +2,7 @@
   "name": "z-biz-tool-aigen",
   "version": "0.2.0",
   "license": "MIT",
-  "description": "AI内容制造工厂",
+  "description": "AI 内容工厂：图片 / PPTX / 长文 / 视频的桌面生成工作台",
   "type": "module",
   "scripts": {
     "dev": "vite",
