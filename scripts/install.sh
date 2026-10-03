@@ -3,10 +3,10 @@
 # scripts/install.sh
 # ------------------------------------------------------------------------------
 # 本地打包并替换当前 macOS 的 .app：
-#   1. 杀掉当前正在运行的同名应用
+#   1. 杀掉当前正在运行的同名应用（先 osascript 优雅退出，超时后再 kill）
 #   2. 编译 Rust release 后端
-#   3. 构建前端 + Tauri bundle（.app + .dmg）
-#   4. 把新的 .app 覆盖安装到 /Applications/
+#   3. 构建前端 + Tauri bundle（.app）
+#   4. 把新的 .app 覆盖安装到 /Applications/（先备份旧版，可回滚）
 #   5. 启动新版本
 #
 # 用法:
@@ -17,6 +17,17 @@
 # 前置条件:
 #   - 在项目根目录执行
 #   - 已安装 Rust + Node.js + npm
+#
+# 安全约束（T-058）：
+#   - 默认不调用 kill -9；先 osascript 退出 + 等待，再 SIGTERM，最后才 SIGKILL
+#   - 安装前保留 ~/.previous_${APP_NAME}_<时间戳>.app 备份，回滚用
+#   - 不修改系统隔离属性，只在用户明确 --ignore-isolation 时清 quarantine
+#
+# 产物定位：不写死 src-tauri/target。
+#   `~/.cargo/config.toml` 的 build.target-dir 会把整棵 target 树重定向到别处，
+#   写死会让脚本在"编译成功"之后报"未找到构建产物"并以 rc=1 退出 ——
+#   症状看起来像构建失败，其实是产物在别处。
+#   一律以 cargo metadata 报的 target_directory 为准，src-tauri/target 只作兜底。
 #
 set -euo pipefail
 
@@ -37,15 +48,21 @@ err() { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; }
 # 参数解析
 LOCAL_ONLY=false
 LAUNCH_AFTER=true
+IGNORE_ISOLATION=false
+GRACE_SECONDS=10    # SIGTERM 等待上限（默认 10s）
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local) LOCAL_ONLY=true; shift ;;
     --no-launch) LAUNCH_AFTER=false; shift ;;
+    --ignore-isolation) IGNORE_ISOLATION=true; shift ;;
+    --grace) GRACE_SECONDS="$2"; shift 2 ;;
     -h|--help)
       cat <<EOF
-用法: bash scripts/install.sh [--local] [--no-launch]
-  --local      安装到 ~/Applications (无需 sudo)
-  --no-launch  安装后不自动启动新版本
+用法: bash scripts/install.sh [--local] [--no-launch] [--ignore-isolation] [--grace <秒>]
+  --local            安装到 ~/Applications (无需 sudo)
+  --no-launch        安装后不自动启动新版本
+  --ignore-isolation 清除新包的 quarantine（Tauri 自签证书开发期需要）
+  --grace <秒>       优雅退出等待上限（默认 10）
 EOF
       exit 0
       ;;
@@ -55,24 +72,39 @@ done
 
 cd "$PROJECT_DIR"
 
-# =============== 1. 杀掉运行中的进程 ===============
+# =============== 1. 停掉运行中的进程 ===============
 info "检查运行中的 ${DISPLAY_NAME}..."
 
 RUNNING=false
 if pgrep -f "${APP_NAME}\.app/Contents/MacOS/${APP_NAME}" > /dev/null 2>&1; then
   RUNNING=true
-  warn "正在运行，尝试安全退出..."
-  # 优先用 AppleScript 优雅退出（保留用户数据）
+  warn "正在运行，先用 AppleScript 优雅退出（保留用户数据）..."
+  # osascript 优先；失败也不致命
   osascript -e "tell application \"${DISPLAY_NAME}\" to quit" 2>/dev/null || true
-  sleep 2
+
+  info "等待优雅退出（最长 ${GRACE_SECONDS}s）..."
+  for ((i = 0; i < GRACE_SECONDS; i++)); do
+    if ! pgrep -f "${APP_NAME}\.app/Contents/MacOS/${APP_NAME}" > /dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
 fi
 
-# 还有进程则强杀
+# 仍未退出才 SIGTERM，再 SIGKILL（默认不直接 -9）
 PIDS=$(pgrep -f "${APP_NAME}\.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true)
 if [ -n "$PIDS" ]; then
-  warn "强杀残留进程: $PIDS"
-  kill -9 $PIDS 2>/dev/null || true
-  sleep 1
+  warn "优雅退出超时；发送 SIGTERM: $PIDS"
+  kill -TERM $PIDS 2>/dev/null || true
+  for ((i = 0; i < 5; i++)); do
+    sleep 1
+    pgrep -f "${APP_NAME}\.app/Contents/MacOS/${APP_NAME}" > /dev/null 2>&1 || break
+  done
+  REMAIN=$(pgrep -f "${APP_NAME}\.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true)
+  if [ -n "$REMAIN" ]; then
+    err "5s SIGTERM 后仍未退出；最后才用 SIGKILL 兜底"
+    kill -KILL $REMAIN 2>/dev/null || true
+  fi
 fi
 
 if [ "$RUNNING" = true ]; then
@@ -102,34 +134,59 @@ info "[2/3] 编译 Rust 后端 + 打 .app bundle（首次约 5-10 分钟）..."
 # 我们这里只产出 .app，不生成 .dmg（用户场景是替换现有 .app，无需 dmg）
 TAURI_SKIP_DMG=1 npx tauri build --bundles app
 
-# 查找 .app 产物
+# 查找 .app 产物（以 cargo metadata 为准，见文件头说明）
+TARGET_DIR=""
+if command -v cargo > /dev/null 2>&1 && [ -d src-tauri ]; then
+  TARGET_DIR=$(cd src-tauri && cargo metadata --format-version 1 --no-deps 2>/dev/null \
+    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' | head -1)
+fi
+
 APP_PATH=""
-for candidate in \
-  "src-tauri/target/release/bundle/macos/${APP_NAME}.app" \
-  "src-tauri/target/release/bundle/macos/${DISPLAY_NAME}.app" \
-  "src-tauri/target/release/bundle/osx/${APP_NAME}.app"; do
-  if [ -d "$candidate" ]; then
-    APP_PATH="$candidate"
-    break
-  fi
+for root in "${TARGET_DIR:-}" "src-tauri/target"; do
+  [ -n "$root" ] || continue
+  for bundle_dir in "release/bundle/macos" "release/bundle/osx"; do
+    for name in "${APP_NAME}.app" "${DISPLAY_NAME}.app"; do
+      candidate="$root/$bundle_dir/$name"
+      if [ -d "$candidate" ]; then
+        APP_PATH="$candidate"
+        break 3
+      fi
+    done
+  done
 done
 
 if [ -z "$APP_PATH" ]; then
   err "未找到构建产物 .app"
-  err "请检查 src-tauri/target/release/bundle/"
+  err "cargo target_directory=${TARGET_DIR:-<未知>}"
+  err "请检查 $TARGET_DIR/release/bundle/ 与 src-tauri/target/release/bundle/"
+  ls -la "${TARGET_DIR:-src-tauri/target}/release/bundle/" 2>/dev/null || true
   ls -la src-tauri/target/release/bundle/ 2>/dev/null || true
   exit 1
 fi
 ok "构建完成: $APP_PATH"
 
-# =============== 5. 复制到 /Applications ===============
+# =============== 5. 安装（备份旧版 → 复制 → 校验） ===============
 info "[3/3] 安装到 $INSTALL_DIR..."
 DEST="$INSTALL_DIR/${APP_NAME}.app"
+BACKUP="${HOME}/.previous_${APP_NAME}_$(date +%Y%m%d_%H%M%S).app"
 
-# 先清掉旧的 quarantine（如果有）
-xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+# 5a) 备份当前版本，便于回滚
+if [ -d "$DEST" ]; then
+  info "备份旧版本到 $BACKUP ..."
+  rm -rf "$BACKUP" 2>/dev/null || true
+  cp -R "$DEST" "$BACKUP"
+  ok "已备份（回滚用：rm -rf ${DEST} && cp -R ${BACKUP} ${DEST}）"
+fi
 
-# 写入 /Applications 需要 sudo
+# 5b) 仅在用户显式传 --ignore-isolation 时才清 quarantine
+if [ "$IGNORE_ISOLATION" = true ]; then
+  warn "清除新包 quarantine（仅开发期）"
+  xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+else
+  info "保留默认 quarantine；如 Gatekeeper 阻断请用 codesign --deep --force --sign - 或走 codesign / 公证"
+fi
+
+# 5c) 复制
 if [ "$INSTALL_DIR" = "/Applications" ] && [ ! -w "$INSTALL_DIR" ]; then
   warn "需要管理员权限写入 /Applications"
   sudo rm -rf "$DEST" 2>/dev/null || true
@@ -140,6 +197,17 @@ else
   cp -R "$APP_PATH" "$DEST"
 fi
 ok "已安装: $DEST"
+
+# 5d) 校验：必须能看到可执行二进制，失败则自动回滚到备份
+if [ ! -x "$DEST/Contents/MacOS/${APP_NAME}" ]; then
+  err "校验失败：未找到 $DEST/Contents/MacOS/${APP_NAME}"
+  if [ -d "$BACKUP" ]; then
+    warn "回滚到备份..."
+    rm -rf "$DEST" 2>/dev/null || true
+    cp -R "$BACKUP" "$DEST"
+  fi
+  exit 1
+fi
 
 # =============== 6. 启动新版本 ===============
 if [ "$LAUNCH_AFTER" = true ]; then
@@ -152,6 +220,7 @@ echo ""
 ok "=== 安装完成 ==="
 echo "应用路径: $DEST"
 echo "Bundle ID: ${BUNDLE_ID}"
-echo ""
-echo "如果未来想回滚:"
-echo "  rm -rf $DEST"
+if [ -d "$BACKUP" ]; then
+  echo "回滚备份: $BACKUP"
+  echo "回滚命令: rm -rf '$DEST' && cp -R '$BACKUP' '$DEST'"
+fi
