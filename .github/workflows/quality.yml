@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: |
           rm -rf node_modules
-          npm install --registry=https://registry.npmmirror.com
+          npm install
 
       - name: Typecheck
         run: npm run typecheck
@@ -79,7 +79,7 @@ jobs:
       # tauri::generate_context! 需要 frontendDist 存在，所以先出一次前端
       - name: Build frontend (for Tauri context)
         run: |
-          npm install --registry=https://registry.npmmirror.com
+          npm install
           npm run build
 
       - name: Install Rust dependencies
