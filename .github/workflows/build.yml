@@ -47,6 +47,9 @@ jobs:
       # that dtolnay/rust-toolchain writes, breaking later cargo invocations
       # with "Unexpected character at row 2, col 24". Remove it so cargo
       # regenerates a clean one on the next build step.
+      # 2026-10-03 收编进模板：此前这个 workaround 只存在于 9 个产品仓的
+      # build.yml 里，模板没有 ⇒ sync --apply 会把它当"待同步"删掉，
+      # 等于一次分发打断全部 CI 构建。
       - name: Reset broken cargo config
         shell: bash
         run: rm -f "$HOME/.cargo/config.toml" "$USERPROFILE/.cargo/config.toml"
@@ -57,12 +60,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev
 
-      # z-biz-tool-shared 已发布为 npm 包（^0.1.0），无需再 clone sibling 仓
+      # 不钉 registry：走 npm 默认源。
+      # 2026-10-03 移除硬编码的 `--registry=https://registry.npmmirror.com` ——
+      # 那是本机调试用的地域镜像，经模板分发后固化进 15 个 public 仓的
+      # GitHub Actions（runner 多在美国/欧洲），既拖慢又构成单点供应链依赖。
+      # 需要换源请走仓库级 .npmrc，不要写进模板。
       - name: Install npm dependencies
-        shell: bash
-        run: |
-          rm -rf node_modules
-          npm install
+        run: npm install
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
