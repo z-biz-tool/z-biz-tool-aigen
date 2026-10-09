@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5B34D6"/>
+      <stop offset="1" stop-color="#FF4E8B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7FF9E8" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#7FF9E8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="232" fill="url(#bg)"/>
+
+  <!-- 画布 -->
+  <rect x="236" y="236" width="552" height="552" rx="128" fill="#122A33"/>
+  <circle cx="496" cy="496" r="250" fill="url(#glow)"/>
+
+  <!-- 主星芒 -->
+  <path d="M496 274 Q496 496 718 496 Q496 496 496 718 Q496 496 274 496 Q496 496 496 274 Z"
+        fill="#FFFFFF"/>
+  <!-- 副星芒 -->
+  <path d="M726 288 Q726 372 810 372 Q726 372 726 456 Q726 372 642 372 Q726 372 726 288 Z"
+        fill="#34E8D2"/>
+  <path d="M322 674 Q322 730 378 730 Q322 730 322 786 Q322 730 266 730 Q322 730 322 674 Z"
+        fill="#7FF9E8"/>
+</svg>
