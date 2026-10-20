@@ -3142,3 +3142,86 @@ mod tests {
         out
     }
 }
+
+#[cfg(test)]
+mod minimax_live_tests {
+    use super::{build_client, generate_text_api, ApiConfig, TextOptions};
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    /// **真实 API 实测**：用真的 MiniMax 端点跑一遍本仓自己的 `generate_text_api`。
+    ///
+    /// aigen 的统一入口就是 OpenAI 兼容的 `/chat/completions`
+    /// （文本/图片/视频都走它），所以 MiniMax 在**文本**这一路上是现成可用的。
+    /// 2026-10-20 实测 `https://api.minimaxi.com/v1/chat/completions` 返回 200。
+    ///
+    /// ⚠️ 本仓的**生图**能力（`generate_image_api`）在 MiniMax 上**未测** ——
+    /// MiniMax 的文生图是独立接口（`/v1/image_generation`），
+    /// 不在 chat/completions 里。本仓的统一入口打的是 chat/completions，
+    /// 所以「MiniMax 能不能生图」这件事**本轮没有结论**，不猜。
+    ///
+    /// 跑法：`MINIMAX_API_KEY=<key> cargo test --lib minimax`
+    /// 没设 key 时**显式打印跳过原因**。
+    #[tokio::test]
+    async fn minimax_live_generate_text() {
+        let Ok(key) = std::env::var("MINIMAX_API_KEY") else {
+            eprintln!("[LIVE] 跳过 minimax 真实 API 实测：未设置 MINIMAX_API_KEY（这是「没跑」，不是「跑过了」）");
+            return;
+        };
+        let cfg = ApiConfig {
+            base_url: std::env::var("MINIMAX_BASE_URL")
+                .unwrap_or_else(|_| "https://api.minimaxi.com/v1".to_string()),
+            api_key: key,
+        };
+        let model = std::env::var("MINIMAX_MODEL")
+            .unwrap_or_else(|_| "MiniMax-M3.1-Flash".to_string());
+        let client = build_client(Duration::from_secs(60));
+        let (text, usage) = generate_text_api(
+            &client,
+            &cfg,
+            "只回两个字：收到",
+            &model,
+            &TextOptions::default(),
+            &CancellationToken::new(),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("真实调用应成功");
+        assert!(!text.trim().is_empty(), "返回内容为空");
+        eprintln!(
+            "[LIVE] aigen generate_text_api 真实调用成功：{}（usage: {:?}）",
+            &text.chars().take(40).collect::<String>(),
+            usage
+        );
+    }
+
+    /// 反向钉：假 key 必须被服务端拒。
+    #[tokio::test]
+    async fn minimax_live_rejects_bad_key() {
+        let Ok(_key) = std::env::var("MINIMAX_API_KEY") else {
+            eprintln!("[LIVE] 跳过（未设置 MINIMAX_API_KEY）");
+            return;
+        };
+        let cfg = ApiConfig {
+            base_url: "https://api.minimaxi.com/v1".to_string(),
+            api_key: "sk-cp-definitely-invalid-key".to_string(),
+        };
+        let client = build_client(Duration::from_secs(30));
+        let err = generate_text_api(
+            &client,
+            &cfg,
+            "hi",
+            "MiniMax-M3.1-Flash",
+            &TextOptions::default(),
+            &CancellationToken::new(),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect_err("假 key 必须被拒");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized"),
+            "期望 401/403，实际：{msg}"
+        );
+    }
+}
