@@ -96,4 +96,7 @@ jobs:
 
       - name: Tests
         working-directory: src-tauri
-        run: cargo test --locked
+        # `-- --nocapture`：Rust 测试框架默认**吞掉通过用例的 stdout/stderr**
+        # ⇒ 本仓「[LIVE] 跳过 minimax 真实 API 实测…」这类跳过标记在 CI 日志里
+        # 看不见 ⇒ 「没跑」看着跟「跑过了」一样。打开捕获后可核对。
+        run: cargo test --locked -- --nocapture
