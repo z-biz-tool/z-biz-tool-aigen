@@ -3173,8 +3173,8 @@ mod minimax_live_tests {
                 .unwrap_or_else(|_| "https://api.minimaxi.com/v1".to_string()),
             api_key: key,
         };
-        let model = std::env::var("MINIMAX_MODEL")
-            .unwrap_or_else(|_| "MiniMax-M3.1-Flash".to_string());
+        let model =
+            std::env::var("MINIMAX_MODEL").unwrap_or_else(|_| "MiniMax-M3.1-Flash".to_string());
         let client = build_client(Duration::from_secs(60));
         let (text, usage) = generate_text_api(
             &client,
@@ -3190,7 +3190,7 @@ mod minimax_live_tests {
         assert!(!text.trim().is_empty(), "返回内容为空");
         eprintln!(
             "[LIVE] aigen generate_text_api 真实调用成功：{}（usage: {:?}）",
-            &text.chars().take(40).collect::<String>(),
+            text.chars().take(40).collect::<String>(),
             usage
         );
     }
