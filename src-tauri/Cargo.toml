@@ -28,7 +28,21 @@ futures-util = "0.3"
 chacha20poly1305 = "0.10"
 base64 = "0.22"
 # 能力层：魔数嗅探 / data URL 编解码 / MIME 映射（纯逻辑，信任边界仍在本仓）
-cap-img = "0.2.0"
+#
+# 2026-10-21 由 0.2.0 升到 0.3.0：cap-img 0.3.0 已发到 crates.io，
+# 而 caret `^0.2.0` **永远不会**解析到 0.3.0（0.x 语义下 minor 即 breaking），
+# 不显式改版本号就一直停在 0.2.0。
+#
+# 依据（源码级核对，不是照抄上游说明）：把 crates.io 上的 0.2.0 与 0.3.0
+# 逐函数比对、去空白归一化后，本仓用到的 6 个字节级原语
+# （sniff_format / encode_data_url / decode_data_url / mime_for_ext /
+#  ext_for_mime / encode_frame_jpeg）**0 字符差异** ⇒ 本次升级零行为变化。
+# 0.3.0 的三处修复（crop 坐标溢出 / EXIF 越界切片 / 名字说谎）都在变换族与
+# info 上，本仓**不走那条路**、够不着。
+#
+# 升级的收益：家族四个消费方停在同一个能力层版本上，
+# 免得 cap-img 下一轮修字节级原语时本仓收不到。
+cap-img = "0.3.0"
 # 真 .pptx 产物：OOXML 就是 zip 包（T-B3）
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # B5：历史时间戳改可读 ISO8601（05 T-C1 许可的依赖）

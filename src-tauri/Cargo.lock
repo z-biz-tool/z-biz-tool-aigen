@@ -399,9 +399,9 @@ dependencies = [
 
 [[package]]
 name = "cap-img"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca8e4802605ee48485c323a0c5feec17aea8a963af1a082aa0acca8b6ad44d7e"
+checksum = "73db90b3eca9d341c4df85740e58dea99daeaf0dcbe9a9b02bf7ac46f1827eb1"
 dependencies = [
  "base64 0.22.1",
  "image",
