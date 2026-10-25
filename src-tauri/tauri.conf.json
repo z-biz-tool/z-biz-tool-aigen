@@ -28,9 +28,17 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://raw.githubusercontent.com/z-biz-tool/z-biz-tool-aigen/main/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5MjA2OThBNzlDN0IyNkUKUldSdXNzZDVpbWtnK2MvNSthMmJ5MU1nTmY5U2IrNFUzMURxdjBTQlpUNElwVGRJSHZDTG1FNFMK",
+      "//": "pubkey 为家族统一签名公钥（与 db/file/sys 同一把，CEO 本机 ~/.zbiz 私钥）；私钥存各仓 GitHub Secrets TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD。tauri.conf.json 是严格 JSON，故用 \"//\" 键旁注，updater 插件忽略未知字段。流程见 z-biz-tool-lead/doc/分发/updater-官方化指南.md。"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
