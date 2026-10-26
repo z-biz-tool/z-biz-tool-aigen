@@ -3,12 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
-import {
-  isReadyFor,
-  providerFor,
-  useAIGenStore,
-  type PublicProvider,
-} from "./aiStore";
+import { isReadyFor, providerFor, useAIGenStore, type PublicProvider } from "./aiStore";
 
 const mockInvoke = invoke as unknown as ReturnType<typeof vi.fn>;
 
@@ -23,7 +18,12 @@ const p = (over: Partial<PublicProvider> & { id: string }): PublicProvider => ({
 });
 
 const OA = p({ id: "oa", name: "OpenAI", capabilities: ["text", "image"], models: ["gpt-4o"] });
-const MM = p({ id: "mm", name: "MiniMax", base_url: "https://mm.example.com/v1", capabilities: ["text", "video"] });
+const MM = p({
+  id: "mm",
+  name: "MiniMax",
+  base_url: "https://mm.example.com/v1",
+  capabilities: ["text", "video"],
+});
 const NOKEY = p({ id: "nokey", has_key: false, key_masked: null, capabilities: ["image"] });
 
 beforeEach(() => {
@@ -36,6 +36,8 @@ beforeEach(() => {
     historyTotal: 0,
     historyStored: 0,
     historyDropped: 0,
+    historyLoading: false,
+    historyError: null,
   });
 });
 
@@ -88,7 +90,11 @@ describe("配置 IPC：密钥单向、不回读（04 §2.2）", () => {
   });
 
   it("loadConfig 失败不抛，只记错误并保留未配置态", async () => {
-    mockInvoke.mockRejectedValue({ code: "STORAGE", message: "读取配置文件失败", retryable: false });
+    mockInvoke.mockRejectedValue({
+      code: "STORAGE",
+      message: "读取配置文件失败",
+      retryable: false,
+    });
     await useAIGenStore.getState().loadConfig();
 
     const s = useAIGenStore.getState();
@@ -126,7 +132,10 @@ describe("配置 IPC：密钥单向、不回读（04 §2.2）", () => {
   it("setActive / removeProvider / testProvider 走对应命令", async () => {
     mockInvoke.mockResolvedValue({ providers: [OA], active: { text: "oa" } });
     await useAIGenStore.getState().setActive("text", "oa");
-    expect(mockInvoke).toHaveBeenLastCalledWith("set_active_provider", { kind: "text", providerId: "oa" });
+    expect(mockInvoke).toHaveBeenLastCalledWith("set_active_provider", {
+      kind: "text",
+      providerId: "oa",
+    });
 
     await useAIGenStore.getState().removeProvider("oa");
     expect(mockInvoke).toHaveBeenLastCalledWith("delete_provider", { providerId: "oa" });
@@ -150,22 +159,41 @@ describe("配置 IPC：密钥单向、不回读（04 §2.2）", () => {
     expect([s.historyTotal, s.historyStored, s.historyDropped]).toEqual([7, 9, 2]);
   });
 
-  it("wipeHistory 清空本地列表；removeHistory 之后重读", async () => {
+  it("loadHistory 成功后落 items 并清掉加载态/错误态", async () => {
+    const item = { id: "r1", kind: "text", prompt: "猫" } as never;
+    mockInvoke.mockResolvedValue({ items: [item], total: 1, stored: 1, dropped_lines: 0 });
+    await useAIGenStore.getState().loadHistory();
+
+    const s = useAIGenStore.getState();
+    expect(s.history).toEqual([item]);
+    expect(s.historyLoading).toBe(false);
+    expect(s.historyError).toBeNull();
+  });
+
+  it("loadHistory 失败不清空旧列表，只暴露错误（与「没有记录」区分）", async () => {
+    const keep = { id: "keep" } as never;
+    useAIGenStore.setState({ history: [keep], historyTotal: 1 });
+    mockInvoke.mockRejectedValue({ code: "IO", message: "读取历史文件失败", retryable: true });
+    await useAIGenStore.getState().loadHistory();
+
+    const s = useAIGenStore.getState();
+    expect(s.history).toEqual([keep]);
+    expect(s.historyTotal).toBe(1);
+    expect(s.historyError).toBe("读取历史文件失败");
+    expect(s.historyLoading).toBe(false);
+  });
+
+  it("wipeHistory 清空本地列表；removeHistory 只删不重读（页码交给调用方）", async () => {
     useAIGenStore.setState({ history: [{} as never], historyTotal: 1 });
     mockInvoke.mockResolvedValue(undefined);
     await useAIGenStore.getState().wipeHistory();
     expect(useAIGenStore.getState().history).toEqual([]);
     expect(mockInvoke).toHaveBeenCalledWith("clear_history");
 
+    mockInvoke.mockClear();
     mockInvoke.mockResolvedValue(true);
     await useAIGenStore.getState().removeHistory("abc");
-    // 删除后会自动重读列表，所以最后一跳是 list_history
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
     expect(mockInvoke).toHaveBeenCalledWith("delete_history", { id: "abc" });
-    expect(mockInvoke).toHaveBeenLastCalledWith("list_history", {
-      kind: null,
-      keyword: null,
-      page: 0,
-      size: 50,
-    });
   });
 });

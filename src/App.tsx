@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { ConfigProvider, Space, Menu, Tag, Button, Tooltip, Modal, Typography, message } from "antd";
+import {
+  ConfigProvider,
+  Space,
+  Menu,
+  Tag,
+  Button,
+  Tooltip,
+  Modal,
+  Typography,
+  message,
+} from "antd";
 import {
   PictureOutlined,
   VideoCameraOutlined,
@@ -44,6 +54,7 @@ export default function App() {
   const providers = useAIGenStore((s) => s.providers);
   const active = useAIGenStore((s) => s.active);
   const configLoaded = useAIGenStore((s) => s.configLoaded);
+  const configError = useAIGenStore((s) => s.configError);
   const openConfig = useAIGenStore((s) => s.openConfig);
   const prompts = useGenerationStore((s) => s.prompts);
   const tasks = useGenerationStore((s) => s.tasks);
@@ -146,7 +157,27 @@ export default function App() {
 
   const headerExtra = (
     <Space>
-      {!configLoaded || mode === "batch" ? null : ready ? (
+      {configError && (
+        <Tooltip title={`${configError}（点击重试）`}>
+          <Tag
+            color="red"
+            role="button"
+            tabIndex={0}
+            aria-label={`配置读取失败：${configError}，点击重试`}
+            style={{ cursor: "pointer" }}
+            onClick={() => void loadConfig()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                void loadConfig();
+              }
+            }}
+          >
+            配置读取失败
+          </Tag>
+        </Tooltip>
+      )}
+      {!configLoaded || mode === "batch" || configError ? null : ready ? (
         <Tooltip title={`${current?.base_url ?? ""}`}>
           <Tag color="green">{headerHint()}</Tag>
         </Tooltip>
@@ -154,15 +185,26 @@ export default function App() {
         <Tag color="orange">{current ? "未填密钥" : "未配置服务商"}</Tag>
       )}
       <Tooltip title={`快捷键一览（${hotkeyLabel("help")}）`}>
-        <Button type="text" icon={<KeyOutlined />} onClick={() => setHelpOpen(true)} />
+        <Button
+          type="text"
+          icon={<KeyOutlined />}
+          aria-label="快捷键一览"
+          onClick={() => setHelpOpen(true)}
+        />
       </Tooltip>
       <Tooltip title="生成历史">
-        <Button type="text" icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)} />
+        <Button
+          type="text"
+          icon={<HistoryOutlined />}
+          aria-label="生成历史"
+          onClick={() => setHistoryOpen(true)}
+        />
       </Tooltip>
       <Tooltip title="生成助手：只给建议，不会替你生成">
         <Button
           type="text"
           icon={<BulbOutlined />}
+          aria-label="生成助手"
           onClick={() =>
             void askAssistant(
               assistantKind,
@@ -174,7 +216,12 @@ export default function App() {
         />
       </Tooltip>
       <Tooltip title={`服务商与密钥（${hotkeyLabel("provider")}）`}>
-        <Button type="text" icon={<SettingOutlined />} onClick={openConfig} />
+        <Button
+          type="text"
+          icon={<SettingOutlined />}
+          aria-label="服务商与密钥"
+          onClick={openConfig}
+        />
       </Tooltip>
     </Space>
   );

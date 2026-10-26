@@ -7,11 +7,11 @@
  * - 历史由 Rust `list_history` 提供（JSONL 落盘，T-C1）
  */
 
-import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
-import { toGenError } from '../_shared/genError';
+import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
+import { toGenError } from "../_shared/genError";
 
-export type GenKind = 'image' | 'video' | 'ppt' | 'text';
+export type GenKind = "image" | "video" | "ppt" | "text";
 
 export interface GenerationRecord {
   id: string;
@@ -22,7 +22,7 @@ export interface GenerationRecord {
   /** 结果文件引用（相对数据目录），不再是内联 base64 */
   result_refs: string[];
   text_result: string | null;
-  status: 'succeeded' | 'polling' | 'failed' | string;
+  status: "succeeded" | "polling" | "failed" | string;
   /** ISO8601 */
   created_at: string;
   usage: { prompt_tokens: number; completion_tokens: number } | null;
@@ -79,6 +79,9 @@ interface AIGenStore {
   historyStored: number;
   /** 载入时被跳过的损坏行数 */
   historyDropped: number;
+  historyLoading: boolean;
+  /** 读取历史失败的原因；与「没有记录」区分开 */
+  historyError: string | null;
 
   loadConfig: () => Promise<void>;
   saveProvider: (input: ProviderInput) => Promise<void>;
@@ -86,20 +89,25 @@ interface AIGenStore {
   setActive: (kind: GenKind, providerId: string) => Promise<void>;
   /** 连通性校验：返回上游模型清单（02 §9） */
   testProvider: (id: string) => Promise<string[]>;
-  loadHistory: (opts?: { kind?: string; keyword?: string; page?: number; size?: number }) => Promise<void>;
+  loadHistory: (opts?: {
+    kind?: string;
+    keyword?: string;
+    page?: number;
+    size?: number;
+  }) => Promise<void>;
   removeHistory: (id: string) => Promise<void>;
   wipeHistory: () => Promise<void>;
   openConfig: () => void;
   closeConfig: () => void;
 }
 
-function applyView(view: ProvidersView): Pick<AIGenStore, 'providers' | 'active' | 'configLoaded'> {
+function applyView(view: ProvidersView): Pick<AIGenStore, "providers" | "active" | "configLoaded"> {
   return { providers: view.providers, active: view.active ?? {}, configLoaded: true };
 }
 
 /** 某类生成当前会路由到哪个服务商（显式 active > 唯一候选） */
 export function providerFor(
-  state: Pick<AIGenStore, 'providers' | 'active'>,
+  state: Pick<AIGenStore, "providers" | "active">,
   kind: GenKind
 ): PublicProvider | null {
   const supports = (p: PublicProvider) =>
@@ -113,7 +121,7 @@ export function providerFor(
 
 /** 是否存在可用于该类生成、且已填密钥的服务商 */
 export function isReadyFor(
-  state: Pick<AIGenStore, 'providers' | 'active'>,
+  state: Pick<AIGenStore, "providers" | "active">,
   kind: GenKind
 ): boolean {
   const p = providerFor(state, kind);
@@ -150,10 +158,12 @@ export const useAIGenStore = create<AIGenStore>((set) => ({
   historyTotal: 0,
   historyStored: 0,
   historyDropped: 0,
+  historyLoading: false,
+  historyError: null,
 
   loadConfig: async () => {
     try {
-      const view = await invoke<ProvidersView>('load_api_config');
+      const view = await invoke<ProvidersView>("load_api_config");
       set({ ...applyView(view), configError: null });
     } catch (e) {
       // 配置读取失败不阻塞界面：面板会在生成时以 NO_CONFIG 错误引导用户。
@@ -170,7 +180,7 @@ export const useAIGenStore = create<AIGenStore>((set) => ({
 
   saveProvider: async (input) => {
     const key = input.apiKey?.trim();
-    const view = await invoke<ProvidersView>('save_api_config', {
+    const view = await invoke<ProvidersView>("save_api_config", {
       providerId: input.providerId ?? null,
       name: input.name ?? null,
       baseUrl: input.baseUrl.trim(),
@@ -182,20 +192,21 @@ export const useAIGenStore = create<AIGenStore>((set) => ({
   },
 
   removeProvider: async (id) => {
-    const view = await invoke<ProvidersView>('delete_provider', { providerId: id });
+    const view = await invoke<ProvidersView>("delete_provider", { providerId: id });
     set(applyView(view));
   },
 
   setActive: async (kind, providerId) => {
-    const view = await invoke<ProvidersView>('set_active_provider', { kind, providerId });
+    const view = await invoke<ProvidersView>("set_active_provider", { kind, providerId });
     set(applyView(view));
   },
 
-  testProvider: async (id) => invoke<string[]>('test_provider', { providerId: id }),
+  testProvider: async (id) => invoke<string[]>("test_provider", { providerId: id }),
 
   loadHistory: async (opts) => {
+    set({ historyLoading: true, historyError: null });
     try {
-      const page = await invoke<HistoryPage>('list_history', {
+      const page = await invoke<HistoryPage>("list_history", {
         kind: opts?.kind ?? null,
         keyword: opts?.keyword ?? null,
         page: opts?.page ?? 0,
@@ -206,21 +217,23 @@ export const useAIGenStore = create<AIGenStore>((set) => ({
         historyTotal: page.total,
         historyStored: page.stored,
         historyDropped: page.dropped_lines,
+        historyLoading: false,
       });
-    } catch {
-      set({ history: [], historyTotal: 0, historyStored: 0 });
+    } catch (e) {
+      // 读不出历史 ≠ 没有历史：保留旧列表并暴露原因，由抽屉渲染错误态与重试
+      set({ historyLoading: false, historyError: toGenError(e).message });
     }
   },
 
   /** 破坏性操作：调用方必须先经确认对话框（04 §6） */
   removeHistory: async (id) => {
-    await invoke('delete_history', { id });
-    await useAIGenStore.getState().loadHistory();
+    // 只删不重读：重读的页码/筛选由抽屉决定，避免先落回第 1 页再跳回当前页
+    await invoke("delete_history", { id });
   },
 
   wipeHistory: async () => {
-    await invoke('clear_history');
-    set({ history: [], historyTotal: 0 });
+    await invoke("clear_history");
+    set({ history: [], historyTotal: 0, historyStored: 0, historyError: null });
   },
 
   openConfig: () => set({ configOpen: true }),
