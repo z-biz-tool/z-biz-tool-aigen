@@ -10,10 +10,11 @@ import {
   InputNumber,
   Typography,
   message,
+  theme,
   Tag,
 } from "antd";
 import { ThunderboltOutlined, DownloadOutlined, CopyOutlined, PictureOutlined, CloseCircleOutlined, AppstoreOutlined, FileImageOutlined, CloseOutlined } from "@ant-design/icons";
-import { EmptyState, LoadingState, ErrorState } from "../_shared";
+import { EmptyState, LoadingState, ErrorState, copyToClipboard } from "../_shared";
 import { exportResult, EXPORT_FILTERS, stamp } from "../_shared/export";
 import { useTask, usePrompt } from "../stores/generationStore";
 import { useFormField } from "../stores/uiStore";
@@ -45,6 +46,7 @@ const sizes = [
 ];
 
 export default function ImageGenPanel() {
+  const { token } = theme.useToken();
   const [prompt, setPrompt] = usePrompt("image");
   // 参数进持久化草稿：重启后回到上次那组 size/count
   const [count, setCount] = useFormField("image", "count");
@@ -127,8 +129,7 @@ export default function ImageGenPanel() {
     });
 
   const handleCopyUrl = (url: string) => {
-    navigator.clipboard.writeText(url);
-    message.success("已复制图片 URL");
+    void copyToClipboard(url, "已复制图片 URL");
   };
 
   // 全局键位在这一页的落点：⌘⏎ 生成、⌘. 取消、⌘S 导出本轮第一张
@@ -221,7 +222,7 @@ export default function ImageGenPanel() {
                 border: "1px solid rgba(102,126,234,0.2)",
                 resize: "vertical",
                 transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
-                background: '#ffffff'
+                background: token.colorBgContainer
               }}
               onFocus={(e) => {
                 e.currentTarget.style.boxShadow = '0 2px 8px rgba(102,126,234,0.15)';

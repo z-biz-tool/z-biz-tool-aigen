@@ -3,3 +3,4 @@ export { AppShell } from "./AppShell";
 export { EmptyState, LoadingState, ErrorState } from "./States";
 export { toGenError, newRequestId, scrubSecrets } from "./genError";
 export type { GenErrorPayload } from "./genError";
+export { copyToClipboard } from "./clipboard";

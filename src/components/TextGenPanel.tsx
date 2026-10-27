@@ -8,6 +8,7 @@ import {
   Typography,
   InputNumber,
   message,
+  theme,
   Tag,
   Tooltip,
 } from "antd";
@@ -19,7 +20,7 @@ import {
   AppstoreOutlined,
   DownloadOutlined,
 } from "@ant-design/icons";
-import { EmptyState, LoadingState, ErrorState } from "../_shared";
+import { EmptyState, LoadingState, ErrorState, copyToClipboard } from "../_shared";
 import { EXPORT_FILTERS, exportResult, stamp } from "../_shared/export";
 import { useTask, usePrompt } from "../stores/generationStore";
 import { useFormField } from "../stores/uiStore";
@@ -36,6 +37,7 @@ const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
 
 export default function TextGenPanel() {
+  const { token } = theme.useToken();
   const [input, setInput] = usePrompt("text");
   // 参数进持久化草稿：模型/温度/maxTokens 是反复调出来的，不该每次重启归零
   const [model, setModel] = useFormField("text", "model");
@@ -112,10 +114,7 @@ export default function TextGenPanel() {
   };
 
   const handleCopy = () => {
-    if (text) {
-      navigator.clipboard.writeText(text);
-      message.success("已复制到剪贴板");
-    }
+    void copyToClipboard(text);
   };
 
   const exportCurrent = () => {
@@ -144,7 +143,7 @@ export default function TextGenPanel() {
               lineHeight: 1.8,
               fontSize: 15,
               padding: 20,
-              background: "#fafafa",
+              background: token.colorFillQuaternary,
               borderRadius: 8,
               minHeight: 120,
             }}
@@ -177,7 +176,7 @@ export default function TextGenPanel() {
           lineHeight: 1.8,
           fontSize: 15,
           padding: 20,
-          background: "#fafafa",
+          background: token.colorFillQuaternary,
           borderRadius: 8,
         }}
       >

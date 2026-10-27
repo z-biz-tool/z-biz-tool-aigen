@@ -1,6 +1,6 @@
 import { Card, Input, Button, Space, Select, Typography, List, InputNumber, message } from "antd";
 import { FilePptOutlined, PlusOutlined, DeleteOutlined, CopyOutlined, CloseCircleOutlined } from "@ant-design/icons";
-import { EmptyState, LoadingState, ErrorState } from "../_shared";
+import { EmptyState, LoadingState, ErrorState, copyToClipboard } from "../_shared";
 import { useTask, usePrompt } from "../stores/generationStore";
 import { useFormField } from "../stores/uiStore";
 import { hotkeyLabel, useHotkeyScope } from "../_shared/hotkeys";
@@ -75,10 +75,7 @@ export default function PptGenPanel() {
         </Paragraph>
         <Button
           icon={<CopyOutlined />}
-          onClick={() => {
-            navigator.clipboard.writeText(path);
-            message.success("已复制文件路径");
-          }}
+          onClick={() => void copyToClipboard(path, "已复制文件路径")}
         >
           复制路径
         </Button>
