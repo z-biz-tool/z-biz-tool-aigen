@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { newRequestId, scrubSecrets, toGenError } from "./genError";
+import {
+  ERROR_HINTS,
+  errorHint,
+  newRequestId,
+  scrubSecrets,
+  toGenError,
+  wantsConfig,
+} from "./genError";
 
 describe("toGenError：后端错误契约", () => {
   it("结构化错误原样取用（与 src-tauri/src/error.rs 对齐）", () => {
@@ -73,5 +80,71 @@ describe("newRequestId", () => {
     }
     // 恢复后回到 uuid 路径
     expect(newRequestId()).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+/**
+ * 「提示文案说去哪儿，界面就必须给那个入口」。
+ *
+ * 改造前 AUTH 的提示写着「请检查「API 配置」中的密钥」，而配置按钮只挂在
+ * NO_CONFIG 上；AUTH 通常又不可重试 ⇒ 用户看到的只有一行说明和一个错误码标签。
+ * 这种错位不报错、不崩溃，只是让人卡住，所以用测试钉住。
+ */
+describe("错误码 → 动作", () => {
+  /** 与 src-tauri/src/error.rs 的 ErrorCode 常量一一对应。 */
+  const RUST_CODES = [
+    "NO_CONFIG",
+    "AUTH",
+    "RATE_LIMIT",
+    "TIMEOUT",
+    "PARSE",
+    "CONTENT_POLICY",
+    "CANCELLED",
+    "NETWORK",
+    "INVALID_PARAM",
+    "UPSTREAM",
+    "STORAGE",
+    "CONFLICT",
+  ];
+
+  it("每个错误码都有提示，且不是只剩兜底那句", () => {
+    for (const code of RUST_CODES) {
+      const hint = errorHint(code);
+      expect(hint, `${code} 缺提示`).toBeTruthy();
+      if (code !== "CANCELLED") {
+        // CANCELLED 是用户自己按的取消，落到兜底文案也说得过去
+        expect(hint, `${code} 掉进了兜底文案`).not.toBe(ERROR_HINTS.UNKNOWN);
+      }
+    }
+  });
+
+  it("提示是一条动作，不是复述错误", () => {
+    for (const [code, hint] of Object.entries(ERROR_HINTS)) {
+      expect(hint.length, `${code} 的提示太敷衍`).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  it("未知错误码退回兜底，不显示 undefined", () => {
+    expect(errorHint("SOMETHING_NEW")).toBe(ERROR_HINTS.UNKNOWN);
+    expect(errorHint("")).toBe(ERROR_HINTS.UNKNOWN);
+  });
+
+  it("配置类错误给入口：没配置 / 密钥无效 / 连不上", () => {
+    for (const code of ["NO_CONFIG", "AUTH", "NETWORK"]) {
+      expect(wantsConfig(code), `${code} 应该给配置入口`).toBe(true);
+    }
+  });
+
+  it("不是配置问题的错误不给入口（别把人送去改不好的地方）", () => {
+    for (const code of ["RATE_LIMIT", "CONTENT_POLICY", "TIMEOUT", "PARSE", "STORAGE", "UNKNOWN"]) {
+      expect(wantsConfig(code), `${code} 不该给配置入口`).toBe(false);
+    }
+  });
+
+  it("凡给了配置入口的码，提示里必须提到「配置」", () => {
+    for (const code of RUST_CODES) {
+      if (!wantsConfig(code)) continue;
+      expect(errorHint(code), `${code} 的提示没提配置`).toContain("配置");
+    }
   });
 });

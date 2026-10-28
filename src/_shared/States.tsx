@@ -1,7 +1,7 @@
 import { Spin, Result, Button, Space, Tag } from "antd";
 import { InboxOutlined, ReloadOutlined, SettingOutlined } from "@ant-design/icons";
 import type { ReactNode } from "react";
-import type { GenErrorPayload } from "./genError";
+import { errorHint, wantsConfig, type GenErrorPayload } from "./genError";
 
 interface EmptyStateProps {
   title?: string;
@@ -62,28 +62,19 @@ export function LoadingState({ tip = "加载中...", minHeight = 240, onCancel }
   );
 }
 
-/** 错误码 → 用户可理解的降级指引（doc/优化方案/03 §7）。 */
-const HINTS: Record<string, string> = {
-  NO_CONFIG: "请先在「API 配置」中填写 Base URL 与密钥，保存后即可生成。",
-  AUTH: "密钥无效或权限不足，请检查「API 配置」中的密钥。",
-  RATE_LIMIT: "上游限流，已自动重试仍未成功，请稍后再试。",
-  UPSTREAM_5XX: "上游服务暂时不可用，可稍后重试或更换模型。",
-  TIMEOUT: "请求超时，请检查网络，或缩短提示词后重试。",
-  PARSE: "上游返回结构异常，可重试；持续失败请更换模型。",
-  CONTENT_POLICY: "提示词被上游内容安全策略拒绝，请调整描述。",
-  NETWORK: "无法连接上游服务，请检查 Base URL 与网络。",
-  INVALID_PARAM: "本次参数不被接受，请调整后重试。",
-  STORAGE: "本地配置或产物写入失败，请检查磁盘权限。",
-  CONFLICT: "目标文件已存在，确认后会覆盖它。",
-  EXPORT: "导出失败，请换一个保存位置。",
-  UNKNOWN: "生成失败，请重试或查看运行日志。",
-};
+/**
+ * 错误码 → 用户可理解的降级指引。
+ *
+ * 表已挪到 `_shared/genError.ts`：那是错误契约所在的地方，
+ * 而「提示文案」和「该给哪个按钮」必须放在一起看，否则很容易出现
+ * 「文案说去改密钥、按钮却只在没配置时才给」这种错位。
+ */
 
 interface ErrorStateProps {
   /** 结构化错误；传字符串时按 UNKNOWN 处理 */
   error?: GenErrorPayload | string | null;
   onRetry?: () => void;
-  /** NO_CONFIG 时用于唤起配置弹窗 */
+  /** 错误指向配置时（NO_CONFIG / AUTH / NETWORK）用于唤起配置弹窗 */
   onOpenConfig?: () => void;
 }
 
@@ -93,9 +84,12 @@ export function ErrorState({ error, onRetry, onOpenConfig }: ErrorStateProps) {
       ? { code: "UNKNOWN", message: error || "发生未知错误", retryable: false }
       : error;
 
-  const hint = HINTS[payload.code] ?? HINTS.UNKNOWN;
+  const hint = errorHint(payload.code);
   const showRetry = payload.retryable && Boolean(onRetry);
-  const showConfig = payload.code === "NO_CONFIG" && Boolean(onOpenConfig);
+  // 按钮跟提示文案走：文案说「检查 API 配置」，就必须点得到 API 配置。
+  // 以前只有 NO_CONFIG 给按钮，而 AUTH 通常不可重试 ⇒ 界面上只剩一行说明和一个
+  // 错误码标签，用户无处可去。
+  const showConfig = wantsConfig(payload.code) && Boolean(onOpenConfig);
 
   return (
     <Result

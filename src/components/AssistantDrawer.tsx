@@ -19,6 +19,7 @@ import {
 } from "antd";
 import { BulbOutlined, CheckOutlined, SaveOutlined } from "@ant-design/icons";
 import { SUGGESTION_GROUP, useAssistantStore } from "../stores/assistantStore";
+import { errorHint, wantsConfig } from "../_shared/genError";
 import { useGenerationStore } from "../stores/generationStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { useAIGenStore } from "../stores/aiStore";
@@ -92,9 +93,12 @@ export default function AssistantDrawer() {
         <Alert
           type="error"
           showIcon
-          message={`${error.code}：${error.message}`}
+          title={`${error.code}：${error.message}`}
+          description={errorHint(error.code)}
           action={
-            error.code === "NO_CONFIG" ? (
+            // 按钮跟提示文案走：AUTH / NETWORK 的下一步同样在 API 配置里，
+            // 只给 NO_CONFIG 会让「密钥无效」变成一句无处可去的说明。
+            wantsConfig(error.code) ? (
               <Button size="small" onClick={openConfig}>
                 去配置
               </Button>

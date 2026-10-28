@@ -32,6 +32,7 @@ import {
   type GenKind,
   type PublicProvider,
 } from "../stores/aiStore";
+import { errorHint, toGenError } from "../_shared/genError";
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -113,7 +114,10 @@ export default function ProviderSettings() {
       message.success("已保存到本地加密存储");
       setDraft(null);
     } catch (e) {
-      message.error(String((e as { message?: string })?.message ?? e));
+      // 走统一错误契约：这里的错误紧挨着密钥输入框，
+      // 原样回显一句带 Bearer/sk- 的串等于把密钥抄到屏幕上。
+      const err = toGenError(e);
+      message.error({ content: `${errorHint(err.code)}（${err.code}）`, duration: 6 });
     } finally {
       setSaving(false);
     }
@@ -126,8 +130,10 @@ export default function ProviderSettings() {
       setDiscovered((d) => ({ ...d, [p.id]: models }));
       message.success(`连通正常，上游返回 ${models.length} 个模型`);
     } catch (e) {
-      const err = e as { code?: string; message?: string };
-      message.error(`${err.code ?? "ERROR"}：${err.message ?? String(e)}`);
+      const err = toGenError(e);
+      // 只说「AUTH」等于没给动作：用户需要知道该改密钥还是该改地址。
+      // 提示文案由 genError 的错误码表提供，与生成面板共用同一份。
+      message.error({ content: `${errorHint(err.code)}（${err.code}）`, duration: 6 });
     } finally {
       setTesting(null);
     }
