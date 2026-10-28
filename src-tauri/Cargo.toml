@@ -1,6 +1,6 @@
 [package]
 name = "z-biz-tool-aigen"
-version = "0.2.0"
+version = "0.2.1"
 description = "AI 内容工厂：图片 / PPTX / 长文 / 视频的桌面生成工作台"
 edition = "2021"
 license = "MIT"
