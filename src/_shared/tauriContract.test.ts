@@ -126,16 +126,44 @@ function listSourceFiles(dir: string): string[] {
   return out;
 }
 
-/** 扫出所有 invoke("cmd", { ... }) 调用点及其顶层键 */
-function parseInvokeCalls(files: string[]): InvokeCall[] {
-  const calls: InvokeCall[] = [];
-  const re = /invoke(?:<[^>]*>)?\(\s*["']([a-z_]+)["']\s*(?:,\s*(\{.*?\}))?\s*\)/gs;
+/**
+ * 收集「命令名常量」：`export const ZBIZ_TAKE_PENDING = "zbiz_take_pending"`。
+ *
+ * 为什么要认常量：前端把命令名提成常量（`ZBIZ_TAKE_PENDING`），
+ * 是为了拼错时编译期就报错。若解析器只认字面量，就得让前端退回
+ * `invoke("zbiz_take_pending")` 字面量写法 —— 那样拼错**编译期也发现不了**。
+ * 所以这里把常量也解析出来，让「用常量」与「契约可查」同时成立。
+ */
+function collectCmdConstants(files: string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  const re = /export\s+const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*["']([a-z_]+)["']/g;
   for (const f of files) {
     const txt = readFileSync(f, "utf8");
     for (const m of txt.matchAll(re)) {
+      map.set(m[1], m[2]);
+    }
+  }
+  return map;
+}
+
+/** 扫出所有 invoke("cmd", { ... }) 调用点及其顶层键 */
+function parseInvokeCalls(files: string[], constants: Map<string, string>): InvokeCall[] {
+  const calls: InvokeCall[] = [];
+  // 命令名可以是字面量，也可以是常量名（常量表查得到就替换成字面量）
+  const re =
+    /invoke(?:<[^>]*>)?\(\s*(?:["']([a-z_]+)["']|([A-Za-z_$][\w$]*))\s*(?:,\s*(\{.*?\}))?\s*\)/gs;
+  for (const f of files) {
+    const txt = readFileSync(f, "utf8");
+    for (const m of txt.matchAll(re)) {
+      const cmd = m[1] ?? constants.get(m[2] ?? "");
+      if (!cmd) {
+        // 常量查不到 ⇒ 命令名未知。这类调用点无法校验，跳过但留下痕迹：
+        // 契约测试会在下面「量具自检」里保证至少扫到足够多的调用点。
+        continue;
+      }
       const keys: string[] = [];
-      if (m[2]) {
-        const body = m[2].trim().slice(1, -1);
+      if (m[3]) {
+        const body = m[3].trim().slice(1, -1);
         for (const part of splitTop(body)) {
           const withColon = part.match(/^([A-Za-z_$][\w$]*)\s*[:,]/);
           const spread = part.match(/^\.\.\.([A-Za-z_$][\w$]*)$/);
@@ -145,7 +173,7 @@ function parseInvokeCalls(files: string[]): InvokeCall[] {
         }
       }
       calls.push({
-        cmd: m[1],
+        cmd,
         keys,
         file: f.replace(REPO + "/", ""),
         line: txt.slice(0, m.index).split("\n").length,
@@ -169,7 +197,9 @@ const RESERVED_NOT_WIRED = new Map<string, string>([
 
 const rustSrc = readFileSync(RUST_COMMANDS, "utf8");
 const rustCommands = parseRustCommands(rustSrc);
-const invokeCalls = parseInvokeCalls(listSourceFiles(SRC));
+const sourceFiles = listSourceFiles(SRC);
+const cmdConstants = collectCmdConstants(sourceFiles);
+const invokeCalls = parseInvokeCalls(sourceFiles, cmdConstants);
 
 describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () => {
   it("解析器本身是好的：Rust 侧解析出 20 个以上命令，每个都有参数信息", () => {
@@ -253,5 +283,22 @@ describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () 
       expect(called.has(cmd), `${cmd} 已经被前端调用了 ⇒ 应从预留清单移除`).toBe(false);
       expect(rustCommands.has(cmd), `${cmd} 在 Rust 侧不存在 ⇒ 预留清单该删了`).toBe(true);
     }
+  });
+
+  it("命令名常量必须指向 Rust 侧真实存在的命令（常量改名不会静默失联）", () => {
+    // 常量是为了拼错能编译期报错而提的，但常量本身也可能指向一个不存在的命令。
+    // 这条把「常量 → Rust 命令」这一环也纳入契约。
+    const bad: string[] = [];
+    for (const [name, value] of cmdConstants) {
+      if (!rustCommands.has(value)) {
+        bad.push(`常量 ${name} = "${value}" 在 Rust 侧不存在`);
+      }
+    }
+    expect(bad, "命令名常量指向不存在的 Rust 命令 ⇒ 调用会运行时才炸").toEqual([]);
+  });
+
+  it("量具自检：命令名常量至少被解析到一条（否则上面的常量检查形同虚设）", () => {
+    expect(cmdConstants.size).toBeGreaterThanOrEqual(1);
+    expect(cmdConstants.get("ZBIZ_TAKE_PENDING")).toBe("zbiz_take_pending");
   });
 });

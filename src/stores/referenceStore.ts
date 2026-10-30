@@ -25,6 +25,14 @@ interface ReferenceStore {
   pick: () => Promise<boolean>;
   /** 复用某条历史结果当参考图（路径只来自历史引用） */
   useRecord: (recordId: string, refIndex?: number) => Promise<boolean>;
+  /**
+   * 直接用给定路径当参考图。
+   *
+   * 路径来源：深链（`zbiz://aigen/open?file=…`）或程序内部。
+   * 真正的魔数/大小/符号链接校验仍在 Rust 的 `prepare_reference_image` 里做 ——
+   * 这里只是把入口打开，信任边界不变。
+   */
+  usePath: (path: string) => Promise<boolean>;
   clear: () => void;
 }
 
@@ -67,6 +75,22 @@ export const useReferenceStore = create<ReferenceStore>((set) => ({
         refIndex: refIndex ?? null,
       });
       set({ image: img, label: `历史结果 · ${fmtKb(img.bytes)}`, busy: false });
+      return true;
+    } catch (e) {
+      set({ busy: false });
+      throw e;
+    }
+  },
+
+  usePath: async (path) => {
+    set({ busy: true });
+    try {
+      const img = await invoke<ReferenceImage>("prepare_reference_image", {
+        path,
+        recordId: null,
+        refIndex: null,
+      });
+      set({ image: img, label: `${img.ext} · ${fmtKb(img.bytes)}`, busy: false });
       return true;
     } catch (e) {
       set({ busy: false });

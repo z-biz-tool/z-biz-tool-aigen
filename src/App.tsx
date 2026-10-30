@@ -23,6 +23,8 @@ import {
   KeyOutlined,
 } from "@ant-design/icons";
 import zhCN from "antd/locale/zh_CN";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { AppShell, ThemeProvider } from "./_shared";
 import { hotkeyLabel, installHotkeys, modeHotkeyLabel, type HotkeyMatch } from "./_shared/hotkeys";
 import { providerFor, useAIGenStore } from "./stores/aiStore";
@@ -38,6 +40,15 @@ import { useAssistantStore } from "./stores/assistantStore";
 import { useGenerationStore } from "./stores/generationStore";
 import { MODE_ORDER, useUiStore, type ModeId } from "./stores/uiStore";
 import type { GenKind } from "./stores/generationStore";
+import { useReferenceStore } from "./stores/referenceStore";
+import {
+  ZBIZ_EVENT,
+  ZBIZ_TAKE_PENDING,
+  isImagePath,
+  resolveDeepLink,
+  resolvePromptKind,
+  type HandoffItem,
+} from "./_shared/deepLink";
 
 const { Text } = Typography;
 
@@ -68,6 +79,73 @@ export default function App() {
     loadConfig();
     loadHistory();
   }, [loadConfig, loadHistory]);
+
+  // ── zbiz:// 深链接线（2026-10-30 接入 cap-hub）─────────────────────────
+  //
+  // 别的产品用 `zbiz://aigen/open?mode=image&prompt=…&file=…` 唤起本应用时，
+  // Rust 把深链收进队列并 emit("zbiz-open")。这里做两件事：
+  //   ① mount 时先 take 一次 —— 冷启动那条信号在监听挂上之前就发出去了，收不到；
+  //   ② 之后每次收到信号再 take，处理已运行实例被二次唤起的情况。
+  // take 是出队即清空，所以 ①② 同时发生也不会把同一条深链执行两遍。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    const drain = async () => {
+      let items: HandoffItem[];
+      try {
+        items = await invoke<HandoffItem[]>(ZBIZ_TAKE_PENDING);
+      } catch (e) {
+        // 非 Tauri 环境（vitest / 浏览器预览）属预期
+        console.warn("[aigen] 取深链队列失败", e);
+        return;
+      }
+      for (const item of items) {
+        const out = resolveDeepLink(item);
+        if (out.problem) {
+          // 静默吞掉的话，用户看到的就是「点了没反应」
+          console.warn("[aigen] 未适配的深链", item, out.problem);
+          message.warning(out.problem);
+          continue;
+        }
+        if (out.mode) setMode(out.mode);
+        if (out.prompt) {
+          const kind = resolvePromptKind(item);
+          useGenerationStore.getState().setPrompt(kind, out.prompt);
+        }
+        if (out.file) {
+          if (isImagePath(out.file)) {
+            try {
+              await useReferenceStore.getState().usePath(out.file);
+              message.success("已带入参考图");
+            } catch (e) {
+              message.error(`参考图带入失败：${String(e)}`);
+            }
+          } else {
+            // 非图片文件本应用接不住，但要让用户知道「收到了什么」
+            message.info(`已收到文件：${out.file}（本应用只接受图片作参考图）`);
+          }
+        }
+      }
+    };
+
+    void drain();
+    void listen(ZBIZ_EVENT, () => void drain())
+      .then((u) => {
+        if (disposed) {
+          u();
+          return;
+        }
+        unlisten = u;
+      })
+      .catch((e) => {
+        console.warn("[aigen] 订阅 zbiz-open 失败（非 Tauri 环境属预期）", e);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [setMode]);
 
   /**
    * 快捷键：一个 window 监听 + 保存最新回调的 ref（fleet 同款）。

@@ -80,6 +80,18 @@ pub struct SubmitAck {
     pub request_id: String,
 }
 
+/// 取走 zbiz:// 深链队列（前端调用）。
+///
+/// 命令名家族统一为 `zbiz_take_pending`（box 等兄弟仓同名）。
+/// 协议与队列本身在 cap-hub 里，本仓只做转发 —— wrapper 写在本仓，
+/// 是为了让本仓的「前端 invoke ⇄ Rust 命令」契约测试扫得到它。
+#[tauri::command]
+pub fn zbiz_take_pending(
+    pending: State<'_, cap_hub::receiver::SharedPending>,
+) -> Vec<cap_hub::Handoff> {
+    cap_hub::receiver::take_pending_from(pending.inner())
+}
+
 #[tauri::command]
 pub async fn submit_generation(
     app: tauri::AppHandle,

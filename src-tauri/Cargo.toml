@@ -50,6 +50,11 @@ cap-img = "0.3.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # B5：历史时间戳改可读 ISO8601（05 T-C1 许可的依赖）
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+# 家族统一深链协议（cap-hub）：zbiz:// 的构造、解析、待处理队列与产品清单。
+#
+# 2026-10-30 接入。此前本仓的 single-instance 回调是 `_argv`（丢弃）——
+# box 发过来的深链收到了但没处理。协议层收口在 capability 仓，各仓只写胶水。
+cap-hub = { path = "../../z-biz-tool-capability/crates/cap-hub", features = ["tauri"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
