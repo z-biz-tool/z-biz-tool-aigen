@@ -397,9 +397,7 @@ pub fn is_private_endpoint(base_url: &str) -> bool {
         // is_private / is_link_local 是 Ipv4Addr 的方法，IpAddr 上没有 ——
         // 得按版本分派，IPv6 那边对应的是「唯一本地地址」fc00::/7。
         Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-        Ok(std::net::IpAddr::V6(v6)) => {
-            v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00
-        }
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
         // 解析不出来的是域名，不可能是回环
         Err(_) => false,
     }
@@ -727,7 +725,15 @@ pub async fn generate_image_api(
         config.base_url.trim_end_matches('/')
     );
     let resp_json = retry_on(cancel, &mut || {
-        image_once(client, config, &url, &body, cancel, timeout, CONNECT_TIMEOUT)
+        image_once(
+            client,
+            config,
+            &url,
+            &body,
+            cancel,
+            timeout,
+            CONNECT_TIMEOUT,
+        )
     })
     .await?;
 
@@ -874,7 +880,15 @@ pub async fn generate_text_api(
     let body = opts.body(model, prompt, false);
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let resp_json = retry_on(cancel, &mut || {
-        text_once(client, config, &url, &body, cancel, timeout, CONNECT_TIMEOUT)
+        text_once(
+            client,
+            config,
+            &url,
+            &body,
+            cancel,
+            timeout,
+            CONNECT_TIMEOUT,
+        )
     })
     .await?;
 
@@ -953,7 +967,15 @@ pub async fn generate_video_api(
         config.base_url.trim_end_matches('/')
     );
     let resp_json = retry_on(cancel, &mut || {
-        video_once(client, config, &url, &body, cancel, timeout, CONNECT_TIMEOUT)
+        video_once(
+            client,
+            config,
+            &url,
+            &body,
+            cancel,
+            timeout,
+            CONNECT_TIMEOUT,
+        )
     })
     .await?;
 
@@ -2467,8 +2489,7 @@ mod tests {
 
         let json = result.expect("内网端点应绕开代理拿到响应");
         assert_eq!(
-            json["choices"][0]["message"]["content"],
-            "ok",
+            json["choices"][0]["message"]["content"], "ok",
             "应拿到回环服务返回的内容"
         );
     }
