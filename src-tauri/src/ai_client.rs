@@ -339,6 +339,15 @@ impl AppState {
 }
 
 /// 带超时与连接池的共享 client。
+///
+/// **回环地址不走代理**。原因很实际：用户把模型端点配成自建的本地服务
+/// （Ollama、vLLM、内网网关）时，代理会把请求劫持走，表现是"本地明明有模型，
+/// 却报 5xx"。而在开着代理的机器上，连本机一个必然拒绝连接的端口都会变成
+/// "代理返回 502" —— 连不上变成了上游错误，错误分类整个错位。
+///
+/// 这里不用 `no_proxy()`（那会让**所有**请求都不走代理，很多人正是靠代理
+/// 访问外网 API）。而是给回环与私有网段单独开一个不走代理的 client，
+/// 在真正发请求时按 base_url 选。
 pub fn build_client(timeout: Duration) -> Client {
     Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
@@ -347,6 +356,53 @@ pub fn build_client(timeout: Duration) -> Client {
         .pool_max_idle_per_host(4)
         .build()
         .unwrap_or_else(|_| Client::new())
+}
+
+/// 走环回/私有网段时用的 client：完全忽略代理环境变量。
+///
+/// `connect_timeout` 单独传：调用方可能把连接超时调得比默认的 CONNECT_TIMEOUT
+/// 更紧（测试里就有调成 700ms 的），这里必须沿用它 —— 用默认值会掩盖掉
+/// "连接超时没生效" 这类问题。
+pub fn build_direct_client(timeout: Duration, connect_timeout: Duration) -> Client {
+    Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(4)
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
+/// base_url 是否指向本机/内网（这类端点不该被代理劫持）。
+pub fn is_private_endpoint(base_url: &str) -> bool {
+    let Some(host) = base_url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .map(|h| h.rsplit('@').next().unwrap_or(h))
+    else {
+        return false;
+    };
+    // 剥掉主机部分里的端口。IPv6 在 URL 里是带方括号的 `[::1]:1234` ——
+    // 那种情况括号内就是完整地址，不能再按 ':' 切（切了 `::1` 就碎了）。
+    let host = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(rest),
+        None => host.split(':').next().unwrap_or(host),
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        // is_private / is_link_local 是 Ipv4Addr 的方法，IpAddr 上没有 ——
+        // 得按版本分派，IPv6 那边对应的是「唯一本地地址」fc00::/7。
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        Ok(std::net::IpAddr::V6(v6)) => {
+            v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00
+        }
+        // 解析不出来的是域名，不可能是回环
+        Err(_) => false,
+    }
 }
 
 /// 获取配置文件路径
@@ -671,7 +727,7 @@ pub async fn generate_image_api(
         config.base_url.trim_end_matches('/')
     );
     let resp_json = retry_on(cancel, &mut || {
-        image_once(client, config, &url, &body, cancel, timeout)
+        image_once(client, config, &url, &body, cancel, timeout, CONNECT_TIMEOUT)
     })
     .await?;
 
@@ -703,7 +759,15 @@ async fn image_once(
     body: &serde_json::Value,
     cancel: &CancellationToken,
     timeout: Duration,
+    connect_timeout: Duration,
 ) -> Result<serde_json::Value, GenError> {
+    let direct;
+    let client = if is_private_endpoint(&config.base_url) {
+        direct = build_direct_client(timeout, connect_timeout);
+        &direct
+    } else {
+        client
+    };
     let resp = race(
         cancel,
         client
@@ -810,7 +874,7 @@ pub async fn generate_text_api(
     let body = opts.body(model, prompt, false);
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let resp_json = retry_on(cancel, &mut || {
-        text_once(client, config, &url, &body, cancel, timeout)
+        text_once(client, config, &url, &body, cancel, timeout, CONNECT_TIMEOUT)
     })
     .await?;
 
@@ -836,7 +900,17 @@ async fn text_once(
     body: &serde_json::Value,
     cancel: &CancellationToken,
     timeout: Duration,
+    connect_timeout: Duration,
 ) -> Result<serde_json::Value, GenError> {
+    // 回环/内网端点改用不走代理的 client：开着 HTTP_PROXY 时，请求会被
+    // 代理劫持到别处，"连不上本地模型"会伪装成"上游 5xx"，错误分类整个错位。
+    let direct;
+    let client = if is_private_endpoint(&config.base_url) {
+        direct = build_direct_client(timeout, connect_timeout);
+        &direct
+    } else {
+        client
+    };
     let resp = race(
         cancel,
         client
@@ -879,7 +953,7 @@ pub async fn generate_video_api(
         config.base_url.trim_end_matches('/')
     );
     let resp_json = retry_on(cancel, &mut || {
-        video_once(client, config, &url, &body, cancel, timeout)
+        video_once(client, config, &url, &body, cancel, timeout, CONNECT_TIMEOUT)
     })
     .await?;
 
@@ -910,7 +984,15 @@ async fn video_once(
     body: &serde_json::Value,
     cancel: &CancellationToken,
     timeout: Duration,
+    connect_timeout: Duration,
 ) -> Result<serde_json::Value, GenError> {
+    let direct;
+    let client = if is_private_endpoint(&config.base_url) {
+        direct = build_direct_client(timeout, connect_timeout);
+        &direct
+    } else {
+        client
+    };
     let resp = race(
         cancel,
         client
@@ -2294,6 +2376,103 @@ mod tests {
         cfg
     }
 
+    /// 回环/内网端点判定：这些端点不能被代理劫持。
+    ///
+    /// 这条不是锦上添花：在开着 HTTP_PROXY 的机器上，连本机一个必然拒绝连接的
+    /// 端口都会被代理接走并回 502，"连不上" 于是伪装成"上游 5xx"，错误分类
+    /// 整个错位 —— 连"是不是网络问题"都判断错。
+    #[test]
+    fn private_endpoints_are_recognised() {
+        for u in [
+            "http://127.0.0.1:1/v1",
+            "http://localhost:11434/v1",
+            "http://LOCALHOST:8080/v1",
+            "http://192.168.1.10:8000/v1",
+            "http://10.0.0.5:8000/v1",
+            "http://172.16.3.4/v1",
+            "http://[::1]:1234/v1",
+        ] {
+            assert!(is_private_endpoint(u), "应识别为内网端点: {u}");
+        }
+        for u in [
+            "https://api.openai.com/v1",
+            "https://api.deepseek.com/v1",
+            "http://example.com/v1",
+            // 域名里带 "localhost" 字样但不是回环
+            "https://localhost.example.com/v1",
+        ] {
+            assert!(!is_private_endpoint(u), "不应识别为内网端点: {u}");
+        }
+    }
+
+    /// 内网端点必须真的绕开代理环境变量。
+    ///
+    /// 做法：起一个只监听回环的极简 HTTP 服务，让它回 200；然后**在测试进程里
+    /// 设上 HTTP_PROXY 指向一个必然连不上的地址**。如果请求走了代理，就会失败；
+    /// 如果按预期绕开代理，就能拿到 200。
+    #[tokio::test]
+    async fn private_endpoint_bypasses_proxy_env() {
+        let _sb = Sandbox::new();
+
+        // 极简回环服务：收下任何请求，回一个最小的 OpenAI 形状 JSON。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        // 把代理指向一个必然连不上的端口：走代理就必然失败。
+        let prev = std::env::var("HTTP_PROXY").ok();
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("http_proxy", "http://127.0.0.1:1");
+
+        let cfg = ApiConfig {
+            base_url: format!("http://{}/v1", addr),
+            api_key: "sk-TEST-x".into(),
+        };
+        let client = Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap();
+        let url = format!("{}/chat/completions", cfg.base_url);
+        let result = text_once(
+            &client,
+            &cfg,
+            &url,
+            &serde_json::json!({ "model": "m", "messages": [] }),
+            &CancellationToken::new(),
+            FAST,
+            CONNECT_TIMEOUT,
+        )
+        .await;
+
+        if let Some(p) = prev {
+            std::env::set_var("HTTP_PROXY", p);
+        } else {
+            std::env::remove_var("HTTP_PROXY");
+        }
+        std::env::remove_var("http_proxy");
+
+        let json = result.expect("内网端点应绕开代理拿到响应");
+        assert_eq!(
+            json["choices"][0]["message"]["content"],
+            "ok",
+            "应拿到回环服务返回的内容"
+        );
+    }
+
     /// 06 #1/#3：**单次请求**在端口已关时必须快速失败（连接超时生效）。
     /// 直连 `text_once` 而不走 `generate_text_api`，是为了把重试退避这个变量隔离掉——
     /// 用户可见的最坏时延 = 单次快速失败 ×(1+MAX_RETRIES) + 退避，那部分单独断言。
@@ -2319,6 +2498,7 @@ mod tests {
             &serde_json::json!({ "model": "m", "messages": [] }),
             &CancellationToken::new(),
             FAST,
+            CONNECT_TIMEOUT,
         )
         .await
         .expect_err("连不上必须报错");
@@ -2381,6 +2561,7 @@ mod tests {
             &serde_json::json!({"model": "m", "messages": []}),
             &CancellationToken::new(),
             FAST,
+            Duration::from_millis(CONNECT_MS),
         )
         .await
         .expect_err("必须超时或连接失败");
