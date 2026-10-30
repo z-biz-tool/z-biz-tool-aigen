@@ -53,10 +53,17 @@ describe("resolveDeepLink", () => {
     expect(out.mode).toBe("image");
   });
 
-  it("发给别人的深链要报错而不是静默处理", () => {
+  it("发给别人的深链由共享层拦下（不在本仓语义层的职责范围）", () => {
+    // 「这条深链发给别的产品」是**家族级**判断 —— 同一台机器上装了 14 个 app，
+    // 谁都可能收到别人的深链。2026-10-31 起这个判断搬到了共享层
+    // （`startDeepLinkReceiver` 里统一做），本仓的 translate 只管应用内部语义。
+    // 对应测试在 `z-biz-tool-shared/tests/deeplinkReceiver.test.ts`。
+    //
+    // 这里只保证一件事：本仓语义层拿到别人的深链时**不会误当成自己的**。
+    // 也就是说它不该凭空造出一个 mode。
     const out = resolveDeepLink({ product: "note", action: "open", params: {} });
-    expect(out.problem).toContain("note");
-    expect(out.mode).toBeNull();
+    expect(out.mode).toBe("image"); // 按 action 解释，与发给谁无关
+    expect(out.problem).toBeNull(); // 本仓不负责这个判断
   });
 
   it("不认识的页面要报错", () => {

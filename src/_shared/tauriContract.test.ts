@@ -195,11 +195,58 @@ const RESERVED_NOT_WIRED = new Map<string, string>([
   ],
 ]);
 
+/**
+ * **经由共享层消费**的 Rust 命令。
+ *
+ * ## 为什么需要这一组
+ *
+ * 2026-10-31 起，本仓的深链接收侧改用共享层
+ * （`z-biz-tool-shared/protocol` 的 `startDeepLinkReceiver`），
+ * 取队列的 `invoke` 调用**发生在共享层内部**，本仓源码里扫不到那个调用点。
+ *
+ * 如果不管这件事，「Rust 侧的命令要么被前端调用，要么登记为预留」这道门禁
+ * 会把 `zbiz_take_pending` 判成「实现了却没人用」—— 门禁失灵比测试挂掉更严重：
+ * 它会开始对**所有**共享层消费的命令误报，逼着大家把命令塞进预留清单，
+ * 门禁就名存实亡了。
+ *
+ * 所以：**本仓一旦 import 了共享层的收侧件，就算消费了它内部调用的那些命令。**
+ *
+ * 这里是**显式登记**而不是自动推断：共享层内部调什么命令，是共享层的实现细节，
+ * 但它必须被下游仓的契约测试知道 —— 不然每个下游仓都得自己写一遍这份登记，
+ * 那又回到「私有副本」的老路。共享层把这个清单导出，下游直接用。
+ */
+const SHARED_CONSUMED_COMMANDS: Record<string, string[]> = {
+  // `startDeepLinkReceiver` 内部取队列用的命令。
+  startDeepLinkReceiver: ["zbiz_take_pending"],
+};
+
 const rustSrc = readFileSync(RUST_COMMANDS, "utf8");
 const rustCommands = parseRustCommands(rustSrc);
 const sourceFiles = listSourceFiles(SRC);
 const cmdConstants = collectCmdConstants(sourceFiles);
 const invokeCalls = parseInvokeCalls(sourceFiles, cmdConstants);
+
+/**
+ * 本仓通过共享层消费掉的 Rust 命令。
+ *
+ * 判据：本仓源码里 import 了共享层的收侧件。
+ * 「import 了」是**足够强**的证据 —— 不用去解析调用点，
+ * 也不用共享层暴露运行时信息。
+ */
+function collectSharedConsumedCommands(files: string[]): Set<string> {
+  const out = new Set<string>();
+  const re = /from\s+["']z-biz-tool-shared\/protocol["']/g;
+  for (const f of files) {
+    const txt = readFileSync(f, "utf8");
+    if (!re.test(txt)) continue;
+    for (const cmds of Object.values(SHARED_CONSUMED_COMMANDS)) {
+      for (const c of cmds) out.add(c);
+    }
+  }
+  return out;
+}
+
+const sharedConsumed = collectSharedConsumedCommands(sourceFiles);
 
 describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () => {
   it("解析器本身是好的：Rust 侧解析出 20 个以上命令，每个都有参数信息", () => {
@@ -265,6 +312,8 @@ describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () 
 
   it("Rust 侧的命令要么被前端调用，要么在「预留未接线」清单里显式声明", () => {
     const called = new Set(invokeCalls.map((c) => c.cmd));
+    // 共享层内部消费的也算「前端调用了」—— 见 SHARED_CONSUMED_COMMANDS 的说明。
+    for (const c of sharedConsumed) called.add(c);
     const unaccounted: string[] = [];
     for (const cmd of rustCommands.keys()) {
       if (called.has(cmd)) continue;
@@ -279,10 +328,20 @@ describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () 
 
   it("「预留未接线」清单里的命令必须真的没有前端调用点（否则该从清单里删掉）", () => {
     const called = new Set(invokeCalls.map((c) => c.cmd));
+    for (const c of sharedConsumed) called.add(c);
     for (const cmd of RESERVED_NOT_WIRED.keys()) {
       expect(called.has(cmd), `${cmd} 已经被前端调用了 ⇒ 应从预留清单移除`).toBe(false);
       expect(rustCommands.has(cmd), `${cmd} 在 Rust 侧不存在 ⇒ 预留清单该删了`).toBe(true);
     }
+  });
+
+  it("共享层消费的每个命令都必须真实存在于 Rust 侧", () => {
+    // 共享层的登记写错了命令名 ⇒ 本仓调用一个不存在的命令 ⇒ 运行时才炸。
+    const bad: string[] = [];
+    for (const cmd of sharedConsumed) {
+      if (!rustCommands.has(cmd)) bad.push(cmd);
+    }
+    expect(bad, "共享层登记的命令在 Rust 侧不存在").toEqual([]);
   });
 
   it("命令名常量必须指向 Rust 侧真实存在的命令（常量改名不会静默失联）", () => {
@@ -297,8 +356,16 @@ describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () 
     expect(bad, "命令名常量指向不存在的 Rust 命令 ⇒ 调用会运行时才炸").toEqual([]);
   });
 
-  it("量具自检：命令名常量至少被解析到一条（否则上面的常量检查形同虚设）", () => {
-    expect(cmdConstants.size).toBeGreaterThanOrEqual(1);
-    expect(cmdConstants.get("ZBIZ_TAKE_PENDING")).toBe("zbiz_take_pending");
+  it("量具自检：本仓扫到的调用点够多（否则上面的比对形同虚设）", () => {
+    expect(invokeCalls.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it("量具自检：共享层消费的命令已被识别（否则那道门禁会误报）", () => {
+    // 共享层化之后，命令名常量搬到了 shared，本仓源码里扫不到常量表。
+    // 但「本仓 import 了共享层收侧件」这件事必须能被认出来 ——
+    // 否则「命令要么被调用要么登记为预留」那道门禁会对 zbiz_take_pending 误报，
+    // 而误报久了大家就会把它塞进预留清单，门禁就名存实亡了。
+    expect(sharedConsumed.size).toBeGreaterThanOrEqual(1);
+    expect(sharedConsumed.has("zbiz_take_pending")).toBe(true);
   });
 });

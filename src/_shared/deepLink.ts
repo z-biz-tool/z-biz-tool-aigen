@@ -1,12 +1,17 @@
 /**
- * zbiz:// 深链接接收（2026-10-30 接入 cap-hub）。
+ * zbiz:// 深链接的**aigen 语义层**。
  *
- * ## 协议
+ * ## 分工
  *
- * 家族统一语法：`zbiz://<product>/<action>?<key>=<value>&...`
- * 规范见 `z-biz-tool-lead/doc/矩阵规划/04_连接度：家族面板与统一协议.md` §2。
- * 编解码在 `cap-hub`（Rust）与 `z-biz-tool-shared/src/protocol/deeplink.ts`（TS）里，
- * 两边有 golden 样本逐字节比对 —— 本文件只做**语义**：把深链翻译成本应用的动作。
+ * | 层 | 在哪 | 管什么 |
+ * |----|----|--------|
+ * | 协议 | `z-biz-tool-shared/src/protocol/deeplink.ts` | 字节级编解码（金标 = Rust `cap-hub`） |
+ * | 机制 | `z-biz-tool-shared/src/protocol/deeplinkReceiver.ts` | 冷启动补取、事件监听、不静默吞掉 |
+ * | **语义** | **本文件** | **收到深链后 aigen 该做什么** |
+ *
+ * 2026-10-31 起本文件不再自带协议与机制 —— 改用真依赖 `z-biz-tool-shared`。
+ * 此前这里是 aigen 私有的完整实现，与共享层的 `deeplink.ts` 语义重复；
+ * 私有副本一旦改坏，只有本仓的测试能发现，家族其它仓看不见。
  *
  * ## aigen 支持的动作
  *
@@ -26,28 +31,26 @@
  * | `prompt` | 提示词草稿，直接填进对应表单 |
  * | `file`   | 本地文件路径：图片类走参考图，其余走「待处理」提示 |
  * | `from`   | 发送方（box 等），只用于日志与回执，不参与路由 |
- *
- * ## 为什么「不认识的深链」要显式提示
- *
- * 静默吞掉的话，用户看到的就是「点了没反应」，无从判断是路径错了还是这应用不支持。
- * 所以未适配的深链一律给出可见提示，并带上 `from` 便于排查。
  */
 
 import type { ModeId } from "../stores/uiStore";
 import type { GenKind } from "../stores/generationStore";
 
-/** Rust 侧 `cap_hub::Handoff` 的镜像（serde 默认字段名，不做 camelCase） */
-export interface HandoffItem {
-  product: string;
-  action: string;
-  params: Record<string, string>;
-}
+/**
+ * Rust 侧 `cap_hub::Handoff` 的镜像。
+ *
+ * 直接复用共享层的 `Handoff` —— 字段名（product/action/params）与
+ * Rust 的 serde 默认字段名一致，两边不需要转换。
+ *
+ * 名字叫 `HandoffItem` 是为了在本仓内部读起来更顺（本仓此前一直用这个名字），
+ * 实质就是共享层的 `Handoff`。
+ */
+export type { Handoff as HandoffItem } from "z-biz-tool-shared/protocol";
 
 /** 深链事件名（cap_hub::EVENT）。payload 无意义，只当「队列里有新深链了」的信号。 */
-export const ZBIZ_EVENT = "zbiz-open";
+export { DEEPLINK_EVENT as ZBIZ_EVENT } from "z-biz-tool-shared/protocol";
 
-/** 取队列的命令名。家族统一，box 等兄弟仓同名。 */
-export const ZBIZ_TAKE_PENDING = "zbiz_take_pending";
+import type { Handoff as HandoffItem } from "z-biz-tool-shared/protocol";
 
 /** action → 目标页面 */
 const ACTION_TO_MODE: Record<string, ModeId> = {
@@ -85,6 +88,9 @@ export interface DeepLinkOutcome {
  * 把一条深链翻译成应用内动作。
  *
  * 纯函数 —— 不碰 store、不碰 Tauri，所以可以直接单测。
+ *
+ * 「product 不是 aigen」这一步由共享层统一判断（同一台机器上装了 14 个 app，
+ * 谁都可能收到别人的深链），本函数只管应用内部语义。
  */
 export function resolveDeepLink(item: HandoffItem): DeepLinkOutcome {
   const outcome: DeepLinkOutcome = {
@@ -94,11 +100,6 @@ export function resolveDeepLink(item: HandoffItem): DeepLinkOutcome {
     from: item.params.from ?? null,
     problem: null,
   };
-
-  if (item.product !== "aigen") {
-    outcome.problem = `这条深链发给 ${item.product}，不是本应用`;
-    return outcome;
-  }
 
   // mode 参数优先于 action：action 描述「做什么」，mode 描述「在哪做」。
   const rawMode = item.params.mode?.trim();
