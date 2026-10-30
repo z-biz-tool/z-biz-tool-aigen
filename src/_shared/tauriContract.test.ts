@@ -20,6 +20,10 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  collectCmdConstants,
+  collectSharedConsumedCommands,
+} from "z-biz-tool-shared/testkit";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
@@ -133,18 +137,16 @@ function listSourceFiles(dir: string): string[] {
  * 是为了拼错时编译期就报错。若解析器只认字面量，就得让前端退回
  * `invoke("zbiz_take_pending")` 字面量写法 —— 那样拼错**编译期也发现不了**。
  * 所以这里把常量也解析出来，让「用常量」与「契约可查」同时成立。
+ *
+ * 2026-10-31 起，这个扫描器搬到了共享层的 testkit —— 各仓各写一份的话，
+ * 每份都会漂移（有的仓改了、有的没改），门禁的效力就不一样了。
  */
-function collectCmdConstants(files: string[]): Map<string, string> {
-  const map = new Map<string, string>();
-  const re = /export\s+const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*["']([a-z_]+)["']/g;
-  for (const f of files) {
-    const txt = readFileSync(f, "utf8");
-    for (const m of txt.matchAll(re)) {
-      map.set(m[1], m[2]);
-    }
-  }
-  return map;
-}
+const sourceFiles = listSourceFiles(SRC);
+const cmdConstants = collectCmdConstants(sourceFiles);
+
+const rustSrc = readFileSync(RUST_COMMANDS, "utf8");
+const rustCommands = parseRustCommands(rustSrc);
+const invokeCalls = parseInvokeCalls(sourceFiles, cmdConstants);
 
 /** 扫出所有 invoke("cmd", { ... }) 调用点及其顶层键 */
 function parseInvokeCalls(files: string[], constants: Map<string, string>): InvokeCall[] {
@@ -211,41 +213,10 @@ const RESERVED_NOT_WIRED = new Map<string, string>([
  *
  * 所以：**本仓一旦 import 了共享层的收侧件，就算消费了它内部调用的那些命令。**
  *
- * 这里是**显式登记**而不是自动推断：共享层内部调什么命令，是共享层的实现细节，
- * 但它必须被下游仓的契约测试知道 —— 不然每个下游仓都得自己写一遍这份登记，
- * 那又回到「私有副本」的老路。共享层把这个清单导出，下游直接用。
+ * 判据与清单都来自共享层的 testkit（`z-biz-tool-shared/testkit`）——
+ * 不在这里写一份私有副本：各仓各写一份的话，每份都会漂移，
+ * 而且共享层改了调用方式时没人会记得回来改这些副本。
  */
-const SHARED_CONSUMED_COMMANDS: Record<string, string[]> = {
-  // `startDeepLinkReceiver` 内部取队列用的命令。
-  startDeepLinkReceiver: ["zbiz_take_pending"],
-};
-
-const rustSrc = readFileSync(RUST_COMMANDS, "utf8");
-const rustCommands = parseRustCommands(rustSrc);
-const sourceFiles = listSourceFiles(SRC);
-const cmdConstants = collectCmdConstants(sourceFiles);
-const invokeCalls = parseInvokeCalls(sourceFiles, cmdConstants);
-
-/**
- * 本仓通过共享层消费掉的 Rust 命令。
- *
- * 判据：本仓源码里 import 了共享层的收侧件。
- * 「import 了」是**足够强**的证据 —— 不用去解析调用点，
- * 也不用共享层暴露运行时信息。
- */
-function collectSharedConsumedCommands(files: string[]): Set<string> {
-  const out = new Set<string>();
-  const re = /from\s+["']z-biz-tool-shared\/protocol["']/g;
-  for (const f of files) {
-    const txt = readFileSync(f, "utf8");
-    if (!re.test(txt)) continue;
-    for (const cmds of Object.values(SHARED_CONSUMED_COMMANDS)) {
-      for (const c of cmds) out.add(c);
-    }
-  }
-  return out;
-}
-
 const sharedConsumed = collectSharedConsumedCommands(sourceFiles);
 
 describe("Tauri 命令契约（前端 invoke ⇄ Rust #[tauri::command]）", () => {
