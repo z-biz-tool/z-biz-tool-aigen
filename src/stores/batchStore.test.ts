@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -92,6 +92,13 @@ beforeEach(() => {
     handlers.push({ event, fn });
     return () => {};
   });
+});
+
+afterEach(() => {
+  // 停掉在途的对账轮询：`get_generation` 桩返回非终态，轮询本来永远不会自然结束。
+  // 不停它的话，测试文件跑完、jsdom 已销毁，React scheduler 仍会被唤起
+  // ⇒ ReferenceError: window is not defined ⇒ 整个 vitest run 以 exit code 1 失败。
+  useBatchStore.getState().clear();
 });
 
 describe("batchStore.start（02 §7）", () => {

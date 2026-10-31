@@ -252,3 +252,65 @@ describe("提示词与回填", () => {
     expect(mockInvoke.mock.calls.length).toBe(before);
   });
 });
+
+describe("在途轮询的可中止性（回归：CI 曾以 exit code 1 红掉）", () => {
+  it("cancel 后对账轮询立刻停，不再敲 get_generation", async () => {
+    // 回归：`runJob` 的轮询循环此前**没有出口**。用户点取消后，
+    // 任务在界面上消失了，`runJob` 却还在后台每 500ms 敲一次 `get_generation`，
+    // 为一个界面已经不再关心的任务持续对账（生产白烧资源）。
+    stubSubmit("job-c");
+    const p = useGenerationStore.getState().submit("text", { prompt: "hi" });
+    await tick();
+    expect(task().requestId).toBe("job-c");
+
+    useGenerationStore.getState().cancel("text");
+    await p;
+
+    const pollsBefore = mockInvoke.mock.calls.filter((c) => c[0] === "get_generation").length;
+    await new Promise((r) => setTimeout(r, 1200)); // 跨过两个 RECONCILE_MS
+    const pollsAfter = mockInvoke.mock.calls.filter((c) => c[0] === "get_generation").length;
+    expect(pollsAfter).toBe(pollsBefore); // 一个都没多
+  });
+
+  it("同 kind 重新提交：上一轮的迟到取消不许覆盖新一轮的状态", async () => {
+    // 回归（生产真 bug）：判据原是"我是否还持有这个 requestId"。
+    // 但同 kind 重新提交时，新一轮可能拿到**同一个** requestId
+    // （后端按 kind 复用编号、测试桩固定返回值都是这样），
+    // 于是上一轮迟到的 CANCELLED 会把新一轮的状态槽覆盖成"已取消" ——
+    // 用户看到的是"新任务莫名其妙自己取消了"。
+    //
+    // 修法：改用 AbortController 身份判"我是否还是当前在途的那一轮"。
+    stubSubmit("job-same");
+    const first = useGenerationStore.getState().submit("text", { prompt: "第一轮" });
+    await tick();
+    expect(task().requestId).toBe("job-same");
+
+    // 同 kind 重新提交（同一个 requestId！）
+    const second = useGenerationStore.getState().submit("text", { prompt: "第二轮" });
+    await tick();
+
+    // 第一轮被中止 ⇒ 它的 catch 走 CANCELLED 分支；这一轮无权写 store
+    await first;
+    expect(task().status).not.toBe("cancelled");
+    expect(task().status).toBe("submitting");
+
+    // 第二轮正常收敛
+    emit("job-same", jobState("job-same", { textResult: "第二轮的结果" }));
+    await second;
+    expect(task().status).toBe("succeeded");
+    expect(task().result).toBe("第二轮的结果");
+  });
+
+  it("reset 也会停掉在途轮询（界面不再关心这个任务了）", async () => {
+    stubSubmit("job-r");
+    const p = useGenerationStore.getState().submit("text", { prompt: "hi" });
+    await tick();
+    useGenerationStore.getState().reset("text");
+    await p;
+
+    const pollsBefore = mockInvoke.mock.calls.filter((c) => c[0] === "get_generation").length;
+    await new Promise((r) => setTimeout(r, 1200));
+    const pollsAfter = mockInvoke.mock.calls.filter((c) => c[0] === "get_generation").length;
+    expect(pollsAfter).toBe(pollsBefore);
+  });
+});

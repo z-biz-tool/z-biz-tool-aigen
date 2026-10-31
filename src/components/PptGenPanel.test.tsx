@@ -29,7 +29,7 @@ import { listen } from "@tauri-apps/api/event";
 import { message } from "antd";
 import PptGenPanel from "./PptGenPanel";
 import { useAIGenStore } from "../stores/aiStore";
-import { EMPTY_TASK, useGenerationStore } from "../stores/generationStore";
+import { EMPTY_TASK, stopAllInflight, useGenerationStore } from "../stores/generationStore";
 import { DEFAULT_CRAFT, useUiStore } from "../stores/uiStore";
 import type { GenerationState } from "../_shared/jobClient";
 
@@ -110,7 +110,13 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // 停掉在途的对账轮询：`get_generation` 桩返回非终态，轮询本来永远不会自然结束。
+  // 不停它的话，测试文件跑完、jsdom 已销毁，React scheduler 仍会被唤起
+  // ⇒ ReferenceError: window is not defined ⇒ 整个 vitest run 以 exit code 1 失败。
+  stopAllInflight();
+});
 
 describe("PptGenPanel：空输入保护", () => {
   it("主题为空 ⇒ 提示且**不调用后端**", () => {

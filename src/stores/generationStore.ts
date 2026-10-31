@@ -114,6 +114,34 @@ const restoredPrompts = (): Record<GenKind, string> => ({
   ...useUiStore.getState().prompts,
 });
 
+/**
+ * 各 kind 在途任务的���止器。
+ *
+ * 放在模块级而不是 store 状态里：它是**运行时句柄**，不是界面要读的数据
+ * （放进 state 会让每次 set 都带上一个 AbortController，徒增订阅抖动）。
+ *
+ * 作用：用户点「取消」时，除了让后端停，还要让**前端的对账轮询**停下来 ——
+ * 否则 `runJob` 会在后台继续每 500ms 敲一次 `get_generation`，
+ * 为一个界面已经不再关心的任务持续对账。
+ */
+const inflight = new Map<GenKind, AbortController>();
+
+/**
+ * 停掉所有在途的对账轮询。
+ *
+ * 给两处用：
+ * 1. 测试收尾 —— 组件测试的 `get_generation` 桩返回非终态，轮询本来**永远不会**
+ *    自然结束。不停它的话，测试文件跑完、jsdom 已销毁，轮询还在跑，
+ *    React 的 scheduler 在没有 `window` 的环境里被唤起 ⇒
+ *    `ReferenceError: window is not defined` ⇒ 整个 vitest run 以 exit code 1 失败
+ *    （**测试本身全绿，CI 照样红**）。
+ * 2. 应用卸载 —— 同理，界面没了就不该再对账。
+ */
+export function stopAllInflight(): void {
+  for (const controller of inflight.values()) controller.abort();
+  inflight.clear();
+}
+
 export const useGenerationStore = create<GenerationStore>((set, get) => ({
   tasks: { image: EMPTY_TASK, video: EMPTY_TASK, ppt: EMPTY_TASK, text: EMPTY_TASK },
   prompts: restoredPrompts(),
@@ -126,8 +154,24 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
     };
     set((s) => ({ tasks: { ...s.tasks, [kind]: started } }));
 
+    // 同 kind 重新提交 ⇒ 先中止上一次的在途轮询，避免两个 runJob 并行对账。
+    inflight.get(kind)?.abort();
+    const controller = new AbortController();
+    inflight.set(kind, controller);
+
     let myId: string | null = null;
     const current = () => get().tasks[kind];
+    /**
+     * 我是否还是**这一 kind 当前在途的那一轮**。
+     *
+     * 判据不能用 requestId：同 kind 重新提交时，前一轮的 requestId 已被清空，
+     * 而新一轮可能拿到**同一个** requestId（后端按 kind 复用编号、或测试桩固定返回值），
+     * 于是前一轮迟到的 catch/终态会误判成"我仍是当前任务"，把新一轮的状态槽覆盖掉。
+     *
+     * 用 AbortController 的身份来判：新一轮提交时 controller 换人，
+     * 前一轮 `inflight.get(kind) !== controller` ⇒ 前一轮的任何迟到事件都无权写 store。
+     */
+    const isCurrent = () => inflight.get(kind) === controller;
     const isMine = () => myId !== null && current().requestId === myId;
     const patchId = (requestId: string) => {
       const cur = current();
@@ -143,6 +187,8 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       const st = await runJob(
         { kind, ...args },
         (s) => {
+          // 已经不是当前在途的那一轮 ⇒ 迟到的事件一律不认领
+          if (!isCurrent()) return;
           patchId(s.requestId);
           if (isMine()) {
             set((cur) => ({
@@ -150,14 +196,20 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
             }));
           }
         },
-        patchId
+        (requestId) => {
+          if (!isCurrent()) return;
+          patchId(requestId);
+        },
+        controller.signal
       );
       // 只有仍是当前任务才落定：用户已取消时 requestId 被清空，不能让迟到的终态复活
-      if (isMine() || current().requestId === st.requestId) {
+      if (isCurrent() && (isMine() || current().requestId === st.requestId)) {
         set((cur) => ({ tasks: { ...cur.tasks, [kind]: derive(cur.tasks[kind], st) } }));
       }
     } catch (e) {
       const payload = toGenError(e);
+      // 已被新一轮顶掉 ⇒ 本轮无权写 store（否则会覆盖新一轮的状态槽）
+      if (!isCurrent()) return;
       if (payload.code === "CANCELLED") {
         if (isMine()) {
           set((cur) => ({
@@ -177,6 +229,9 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
           },
         }));
       }
+    } finally {
+      // 只有自己这一轮才清 —— 同 kind 的新任务已经换过 controller 了。
+      if (inflight.get(kind) === controller) inflight.delete(kind);
     }
   },
 
@@ -190,10 +245,18 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
         [kind]: { ...s.tasks[kind], status: "cancelled", requestId: null, result: null },
       },
     }));
+    // 后端停 + 前端轮询停：只停后端的话，`runJob` 还会继续对账。
+    inflight.get(kind)?.abort();
     void cancelJob(requestId).catch(() => undefined);
   },
 
-  reset: (kind) => set((s) => ({ tasks: { ...s.tasks, [kind]: EMPTY_TASK } })),
+  reset: (kind) => {
+    // 复位 = 界面不再关心这个任务了 ⇒ 对账轮询也该停。
+    // 否则 `runJob` 会在后台继续每 500ms 敲一次后端，为一个已被丢弃的任务持续对账。
+    inflight.get(kind)?.abort();
+    inflight.delete(kind);
+    set((s) => ({ tasks: { ...s.tasks, [kind]: EMPTY_TASK } }));
+  },
 
   setPrompt: (kind, value) => {
     set((s) => ({ prompts: { ...s.prompts, [kind]: value } }));

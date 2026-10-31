@@ -60,11 +60,28 @@ const RECONCILE_MS = 500;
 /** 后端连续 RECONCILE_MS 这么久都读不到状态、期间也没有任何事件 ⇒ 判定任务已丢失 */
 const MISSING_LIMIT = 3;
 
-/** 提交并跟踪到终态。事件为主，`get_generation` 对账为辅（事件丢失/订阅失败也能收敛）。 */
+/**
+ * 提交并跟踪到终态。事件为主，`get_generation` 对账为辅（事件丢失/订阅失败也能收敛）。
+ *
+ * ## 中止（AbortSignal）
+ *
+ * 轮询循环必须有出口。此前**没有**：调用方取消任务后，`runJob` 仍在后台
+ * 每 500ms 敲一次 `get_generation`，直到后端给出终态为止。后果有两个：
+ *
+ * 1. 生产里：用户点了取消，任务在界面上消失了，后端却还在为一个没人要的
+ *    任务持续对账 —— 资源白烧。
+ * 2. 测试里：测试文件跑完、jsdom 已销毁，轮询还在跑 ⇒ React 的 scheduler
+ *    在没有 `window` 的环境里被唤起 ⇒ `ReferenceError: window is not defined`，
+ *    整个 vitest run 以 exit code 1 失败（**测试本身全绿，CI 照样红**）。
+ *
+ * 所以这里接一个可选的 `signal`：中止后循环立即退出，`runJob` 以
+ * `CANCELLED` 错误收尾（与后端取消的语义一致）。
+ */
 export async function runJob(
   args: JobArgs & { kind: string },
   onState?: (s: GenerationState) => void,
-  onRequestId?: (requestId: string) => void
+  onRequestId?: (requestId: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationState> {
   const ack = await invoke<SubmitAck>("submit_generation", {
     req: {
@@ -104,6 +121,10 @@ export async function runJob(
       });
     });
 
+  /** 中止时立刻唤醒等待中的轮询（否则要等满一个 RECONCILE_MS 才退出） */
+  const onAbort = () => wakeups.splice(0).forEach((w) => w());
+  signal?.addEventListener("abort", onAbort);
+
   /**
    * 轮询快照只在"不是倒退"时才采纳。事件是同一处按序发的，直接覆盖；
    * 轮询可能在途时被新事件超过，所以必须挡住。`updatedAt` 只到秒，
@@ -123,6 +144,13 @@ export async function runJob(
     let misses = 0;
     let seqAtLastPoll = eventSeq;
     while (!last || !isTerminal(last.status)) {
+      if (signal?.aborted) {
+        throw {
+          code: "CANCELLED",
+          message: `任务 ${requestId} 已取消`,
+          retryable: false,
+        };
+      }
       const s = await invoke<GenerationState>("get_generation", { requestId }).catch(() => null);
       if (s) {
         misses = 0;
@@ -140,6 +168,7 @@ export async function runJob(
       await wait(RECONCILE_MS);
     }
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     unlisten?.();
     wakeups.splice(0).forEach((w) => w());
   }

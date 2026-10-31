@@ -52,6 +52,27 @@ export const useBatchStore = create<BatchStore>((set, get) => {
   const patch = (key: string, next: Partial<BatchItem>) =>
     set((s) => ({ items: s.items.map((i) => (i.key === key ? { ...i, ...next } : i)) }));
 
+  /**
+   * 每条在途任务的中止器。
+   *
+   * 放在 store 闭包里（而不是 state 里）：它是运行时句柄，不是界面要读的数据。
+   * 取消时除了让后端停，还要让**前端的对账轮询**停下来 ——
+   * 否则 `runJob` 会继续为一个界面已经不再关心的任务每 500ms 敲一次后端。
+   */
+  const controllers = new Map<string, AbortController>();
+
+  /**
+   * 停掉所有在途的对账轮询。
+   *
+   * 测试收尾时必须调：组件/批量测试的 `get_generation` 桩返回非终态，
+   * 轮询本来永远不会自然结束 ⇒ 停不掉的话，测试文件跑完、jsdom 已销毁，
+   * React scheduler 在没有 `window` 的环境里被唤起 ⇒ `ReferenceError: window is not defined`。
+   */
+  const stopAll = () => {
+    for (const controller of controllers.values()) controller.abort();
+    controllers.clear();
+  };
+
   const recheckRunning = () => {
     const left = get().items.some((i) => i.status === "running" || i.status === "queued");
     if (!left) set({ running: false });
@@ -72,6 +93,10 @@ export const useBatchStore = create<BatchStore>((set, get) => {
     let myId: string | null = null;
     const mine = () => myId !== null && get().items.find((i) => i.key === key)?.requestId === myId;
 
+    // 本条任务的中止器：取消时用来停掉 `runJob` 的对账轮询。
+    const controller = new AbortController();
+    controllers.set(key, controller);
+
     try {
       const st = await runJob(
         {
@@ -90,7 +115,8 @@ export const useBatchStore = create<BatchStore>((set, get) => {
         (id) => {
           myId = id;
           patch(key, { requestId: id });
-        }
+        },
+        controller.signal
       );
       const terminal: BatchStatus =
         st.status === "succeeded" ? "succeeded" : st.status === "cancelled" ? "cancelled" : "failed";
@@ -109,6 +135,8 @@ export const useBatchStore = create<BatchStore>((set, get) => {
         requestId: null,
         durationMs: Date.now() - startedAt,
       });
+    } finally {
+      if (controllers.get(key) === controller) controllers.delete(key);
     }
     recheckRunning();
   };
@@ -143,12 +171,15 @@ export const useBatchStore = create<BatchStore>((set, get) => {
       const item = get().items.find((i) => i.key === key);
       if (!item) return;
       patch(key, { status: "cancelled", requestId: null });
+      // 后端停 + 前端轮询停：只停后端的话，`runJob` 还会继续对账。
+      controllers.get(key)?.abort();
       if (item.requestId) void cancelJob(item.requestId).catch(() => undefined);
       recheckRunning();
     },
 
     cancelAll: () => {
       for (const it of get().items) {
+        controllers.get(it.key)?.abort();
         if (it.requestId) void cancelJob(it.requestId).catch(() => undefined);
       }
       set((s) => ({
@@ -161,7 +192,11 @@ export const useBatchStore = create<BatchStore>((set, get) => {
       }));
     },
 
-    clear: () => set({ items: [], running: false }),
+    clear: () => {
+      // 清空 = 界面不再关心这批任务 ⇒ 对账轮询也该停
+      stopAll();
+      set({ items: [], running: false });
+    },
 
     succeeded: () => get().items.filter((i) => i.status === "succeeded").length,
     finished: () => get().items.filter((i) => isTerminal(i.status)).length,

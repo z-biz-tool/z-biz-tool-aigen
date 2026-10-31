@@ -10,7 +10,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import ImageGenPanel from "./ImageGenPanel";
 import { useAIGenStore } from "../stores/aiStore";
-import { EMPTY_TASK, useGenerationStore } from "../stores/generationStore";
+import { EMPTY_TASK, stopAllInflight, useGenerationStore } from "../stores/generationStore";
 import { useTemplateStore, type PromptTemplate } from "../stores/templateStore";
 import { useReferenceStore } from "../stores/referenceStore";
 import type { GenerationState } from "../_shared/jobClient";
@@ -121,7 +121,13 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // 停掉在途的对账轮询：`get_generation` 桩返回非终态，轮询本来永远不会自然结束。
+  // 不停它的话，测试文件跑完、jsdom 已销毁，React scheduler 仍会被唤起
+  // ⇒ ReferenceError: window is not defined ⇒ 整个 vitest run 以 exit code 1 失败。
+  stopAllInflight();
+});
 
 describe("ImageGenPanel 的风格预设与负面提示词（02 §1.2）", () => {
   it("参考图走 Rust 受控入口，并作为参数下发", async () => {
