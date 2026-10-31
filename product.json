@@ -1,0 +1,22 @@
+{
+  "id": "aigen",
+  "displayName": "AI 内容工厂",
+  "description": "图片 / 文本生成（可用）+ 视频 / PPT（面板为 UI 框架，功能开发中）",
+  "acceptsDeepLink": true,
+  "actions": [
+    "open",
+    "image",
+    "video",
+    "ppt",
+    "text",
+    "batch"
+  ],
+  "keywords": [
+    "AI",
+    "生图",
+    "视频",
+    "PPT",
+    "写作",
+    "文生图"
+  ]
+}
