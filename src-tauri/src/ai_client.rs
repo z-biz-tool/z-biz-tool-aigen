@@ -174,7 +174,9 @@ impl AppConfig {
             ));
         };
 
-        if picked.api_key.trim().is_empty() {
+        // 本地/内网的自建服务没有鉴权层，允许空密钥（2026-10-31 修：
+        // 此前一律要求，指向 mini 网关时每个生成入口都报「还没填写密钥」）
+        if picked.api_key.trim().is_empty() && !is_private_endpoint(&picked.base_url) {
             return Err(GenError::new(
                 code::NO_CONFIG,
                 format!("服务商「{}」还没有填写密钥", picked.name),
@@ -390,7 +392,14 @@ pub fn is_private_endpoint(base_url: &str) -> bool {
         Some(rest) => rest.split(']').next().unwrap_or(rest),
         None => host.split(':').next().unwrap_or(host),
     };
-    if host.eq_ignore_ascii_case("localhost") {
+    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("host.docker.internal") {
+        return true;
+    }
+    // 名称类后缀：mDNS 的 `xxx.local`（macOS 默认主机名就是这个形状）、
+    // 局域网 `.lan`、容器/内网 `.internal`。它们解析不成 IP，
+    // 但绝无可能属于公网服务 —— 不显式列出会把「家里那台 mini」判成公网。
+    let lower = host.to_ascii_lowercase();
+    if lower.ends_with(".local") || lower.ends_with(".lan") || lower.ends_with(".internal") {
         return true;
     }
     match host.parse::<std::net::IpAddr>() {
@@ -473,7 +482,7 @@ pub fn load_config() -> Result<AppConfig, GenError> {
     Ok(cfg)
 }
 
-/// 端点形状校验：必须 https（本地 mock 例外）
+/// 端点形状校验：必须 https（本地 / 内网 mock、自建网关例外）
 pub fn validate_base_url(base_url: &str) -> Result<(), GenError> {
     if base_url.trim().is_empty() {
         return Err(GenError::new(code::NO_CONFIG, "尚未配置 Base URL"));
@@ -484,10 +493,14 @@ pub fn validate_base_url(base_url: &str) -> Result<(), GenError> {
     let is_loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
         .iter()
         .any(|p| low.starts_with(p));
-    if !is_https && !is_loopback {
+    // 2026-10-31 修：局域网里的自建网关（如 mini 上的 192.168.31.249:8200）
+    // 没有证书，只跑 http。原来只放行回环，于是「LAN 自建服务」这一整类
+    // 配置被挡在门外 —— 而明文局限在内网一段链路，与公网明文是两件事。
+    let is_private_http = low.starts_with("http://") && is_private_endpoint(base_url);
+    if !is_https && !is_loopback && !is_private_http {
         return Err(GenError::new(
             code::INVALID_PARAM,
-            "Base URL 必须使用 https（本地联调可用 http://localhost）",
+            "Base URL 必须使用 https（本地/内网自建服务可用 http）",
         ));
     }
     Ok(())
@@ -496,7 +509,9 @@ pub fn validate_base_url(base_url: &str) -> Result<(), GenError> {
 /// 配置校验：缺 key / 非 https 直接短路，不打上游（03 §7 NO_CONFIG、04 §3 传输安全）
 pub fn validate_config(cfg: &ApiConfig) -> Result<(), GenError> {
     validate_base_url(&cfg.base_url)?;
-    if cfg.api_key.trim().is_empty() {
+    // 私有地址上的自建服务没有鉴权层，允许空 key（服务端真校验就回 401，
+    // 比在本地拦住更准）。公网地址仍必须给 key。
+    if cfg.api_key.trim().is_empty() && !is_private_endpoint(&cfg.base_url) {
         return Err(GenError::no_config());
     }
     Ok(())
@@ -774,18 +789,18 @@ async fn image_once(
     } else {
         client
     };
-    let resp = race(
-        cancel,
-        client
-            .post(url)
-            .timeout(timeout)
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send(),
-    )
-    .await?
-    .map_err(GenError::from_reqwest)?;
+    // 免鉴权的自建服务不要发 `Authorization: Bearer `（空值）——
+    // 个别网关把它当成「给了错误凭据」直接 401，把正常调用打成失败
+    let mut req = client
+        .post(url)
+        .timeout(timeout)
+        .header("Content-Type", "application/json");
+    if !config.api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", config.api_key));
+    }
+    let resp = race(cancel, req.json(body).send())
+        .await?
+        .map_err(GenError::from_reqwest)?;
     ensure_success(resp, cancel, config).await
 }
 
@@ -925,18 +940,18 @@ async fn text_once(
     } else {
         client
     };
-    let resp = race(
-        cancel,
-        client
-            .post(url)
-            .timeout(timeout)
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send(),
-    )
-    .await?
-    .map_err(GenError::from_reqwest)?;
+    // 免鉴权的自建服务不要发 `Authorization: Bearer `（空值）——
+    // 个别网关把它当成「给了错误凭据」直接 401，把正常调用打成失败
+    let mut req = client
+        .post(url)
+        .timeout(timeout)
+        .header("Content-Type", "application/json");
+    if !config.api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", config.api_key));
+    }
+    let resp = race(cancel, req.json(body).send())
+        .await?
+        .map_err(GenError::from_reqwest)?;
     ensure_success(resp, cancel, config).await
 }
 
@@ -1015,18 +1030,18 @@ async fn video_once(
     } else {
         client
     };
-    let resp = race(
-        cancel,
-        client
-            .post(url)
-            .timeout(timeout)
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send(),
-    )
-    .await?
-    .map_err(GenError::from_reqwest)?;
+    // 免鉴权的自建服务不要发 `Authorization: Bearer `（空值）——
+    // 个别网关把它当成「给了错误凭据」直接 401，把正常调用打成失败
+    let mut req = client
+        .post(url)
+        .timeout(timeout)
+        .header("Content-Type", "application/json");
+    if !config.api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", config.api_key));
+    }
+    let resp = race(cancel, req.json(body).send())
+        .await?
+        .map_err(GenError::from_reqwest)?;
     ensure_success(resp, cancel, config).await
 }
 
@@ -2061,7 +2076,11 @@ mod tests {
             .mount(&server)
             .await;
 
+        // 用**公网**地址：私有地址上「没有 key」是合法的（那类端点没有鉴权层，
+        // 见 private_http_endpoint_needs_no_key）。这条钉的是「公网缺 key
+        // 一个字节都不许发」——上游 mock 的 received_requests 必须为空。
         let mut c = mock_cfg(&server);
+        c.base_url = "https://api.example.com/v1".into();
         c.api_key = "  ".into();
         let err = gen_text(&build_client(TEXT_TIMEOUT), &c, "hi", "m", &token(), FAST)
             .await
@@ -2599,13 +2618,17 @@ mod tests {
         );
     }
 
-    /// 顺带钉住：明文非本地端点在**发出任何请求前**就被拒（04 §3 传输安全）
+    /// 明文**公网**端点必须在本地被拦下，一个字节都不发。
+    ///
+    /// 2026-10-31 起私有地址（含 10/8）允许明文 http —— 那类地址上的自建服务
+    /// 常常没有证书，明文局限在内网一段链路。所以这里不能再用 `10.255.255.1`
+    /// 当「远端」样本：它现在属于被放行的一类。改用真正的公网域名。
     #[tokio::test]
     async fn plaintext_remote_endpoint_is_rejected_before_any_request() {
         let _sb = Sandbox::new();
         let client = Client::builder().build().unwrap();
         let cfg = ApiConfig {
-            base_url: "http://10.255.255.1/v1".to_string(),
+            base_url: "http://api.example.com/v1".to_string(),
             api_key: "sk-TEST-x".to_string(),
         };
         let started = Instant::now();
@@ -2625,6 +2648,50 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "根本没走本地校验"
+        );
+    }
+
+    /// 私有地址上的自建服务：明文 http 允许、空密钥允许。
+    ///
+    /// 这条钉住 2026-10-31 放宽的两道门。以前 `http://192.168.31.249:8200/v1`
+    /// 会被判「必须使用 https」、空 key 会被判「还没填写密钥」，
+    /// 于是一台局域网里的本地模型网关根本用不了。
+    #[test]
+    fn private_http_endpoint_needs_no_key() {
+        for base in [
+            "http://127.0.0.1:8200/v1",
+            "http://localhost:11434/v1",
+            "http://192.168.31.249:8200/v1",
+            "http://10.0.0.5:8000/v1",
+            "http://172.20.1.9/v1",
+            "http://[::1]:8200/v1",
+            "http://zifangs-mac-mini.local:8200/v1",
+        ] {
+            let c = ApiConfig {
+                base_url: base.to_string(),
+                api_key: String::new(),
+            };
+            validate_config(&c).unwrap_or_else(|e| panic!("{base} 应放行，实际 {:?}", e.code));
+        }
+
+        // 公网两条老规矩一条都不能松
+        let public_keyless = ApiConfig {
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: String::new(),
+        };
+        assert_eq!(
+            validate_config(&public_keyless).unwrap_err().code,
+            code::NO_CONFIG,
+            "公网缺 key 必须拦"
+        );
+        let public_plain = ApiConfig {
+            base_url: "http://api.example.com/v1".to_string(),
+            api_key: "sk-x".to_string(),
+        };
+        assert_eq!(
+            validate_config(&public_plain).unwrap_err().code,
+            code::INVALID_PARAM,
+            "公网明文必须拦"
         );
     }
 
@@ -3347,7 +3414,7 @@ mod tests {
 
 #[cfg(test)]
 mod minimax_live_tests {
-    use super::{build_client, generate_text_api, ApiConfig, TextOptions};
+    use super::{build_client, generate_text_api, validate_config, ApiConfig, TextOptions};
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
@@ -3425,5 +3492,52 @@ mod minimax_live_tests {
             msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized"),
             "期望 401/403，实际：{msg}"
         );
+    }
+
+    // ==================== 真实网关直连 ====================
+
+    /// 内网 http + 空 key 必须放行，且能真的生成文本（未设 `ZBIZ_GW` 时跳过）。
+    ///
+    /// 2026-10-31 前 aigen 有两道门把内网自建服务挡在外面：`validate_base_url`
+    /// 只认 https 或回环（`http://192.168.x.x` 直接被判「必须使用 https」），
+    /// `validate_config` 无条件要求非空 key。
+    ///
+    /// ```sh
+    /// ZBIZ_GW=http://192.168.31.249:8200/v1 ZBIZ_MODEL=zBiz-Text-35B \
+    ///   cargo test -p z-biz-tool-aigen live_zbiz -- --nocapture
+    /// ```
+    #[tokio::test]
+    async fn live_zbiz_gateway_accepts_keyless_and_replies() {
+        let Ok(gw) = std::env::var("ZBIZ_GW") else {
+            return;
+        };
+        let model = std::env::var("ZBIZ_MODEL").unwrap_or_else(|_| "zBiz-Text-35B".to_string());
+        let cfg = ApiConfig {
+            base_url: gw.clone(),
+            api_key: String::new(), // 本地网关没有鉴权层
+        };
+
+        // ① 校验层：内网 http + 空 key 必须放行（两道门一起验）
+        validate_config(&cfg).expect("内网 http + 空 key 应放行");
+
+        // ② 真实生成
+        let client = build_client(Duration::from_secs(120));
+        let (text, _usage) = generate_text_api(
+            &client,
+            &cfg,
+            "用一句话介绍你自己，不超过30字。",
+            &model,
+            &TextOptions::default(),
+            &CancellationToken::new(),
+            Duration::from_secs(120),
+        )
+        .await
+        .expect("真实调用失败");
+        assert!(!text.trim().is_empty(), "返回为空（网关 {gw}）");
+        assert!(
+            text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "应返回中文，实际：{text}"
+        );
+        println!("[aigen → {gw}] {}", text.trim());
     }
 }

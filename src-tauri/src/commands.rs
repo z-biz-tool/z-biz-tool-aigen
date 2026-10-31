@@ -460,7 +460,8 @@ pub async fn test_provider(
         .iter()
         .find(|p| p.id == provider_id)
         .ok_or_else(|| GenError::new(code::INVALID_PARAM, "服务商不存在"))?;
-    if provider.api_key.trim().is_empty() {
+    // 本地/内网自建服务没有鉴权层，允许空密钥
+    if provider.api_key.trim().is_empty() && !ai_client::is_private_endpoint(&provider.base_url) {
         return Err(GenError::new(
             code::NO_CONFIG,
             format!("服务商「{}」还没有填写密钥", provider.name),
