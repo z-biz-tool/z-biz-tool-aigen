@@ -54,7 +54,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 #
 # 2026-10-30 接入。此前本仓的 single-instance 回调是 `_argv`（丢弃）——
 # box 发过来的深链收到了但没处理。协议层收口在 capability 仓，各仓只写胶水。
-cap-hub = { path = "../../z-biz-tool-capability/crates/cap-hub", features = ["tauri"] }
+cap-hub = { path = "../../z-biz-tool-capability/crates/cap-hub", version = "0.1.0", features = ["tauri"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
