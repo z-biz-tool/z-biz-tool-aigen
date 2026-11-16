@@ -1,23 +1,23 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.2",
   "notes": "See the assets below to download this version.",
-  "pub_date": "2026-10-28T17:31:48Z",
+  "pub_date": "2026-11-16T01:39:35Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.1/z-biz-tool-aigen_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2UyL1VKNUlrVFp2V0gxeUh0YkZva1VtalVNaE5sdS9xTytJQzJuRjRtanM3MGNsS2pCL2hmejdpTnhVRkVIcHJSWjFWdkdPa1J3aGlsSURQcG44RlFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA3NTc5CWZpbGU6ei1iaXotdG9vbC1haWdlbi5hcHAudGFyLmd6CmMyQ0U4MHZnbEZNQUNGMkNyZ1ZDczZmdWVEN3pxU1k5Vk5ZUWFkaWpVN0hzVDVRRGpNclBBRG11MTJORHN3NGJxVjJGbUJaSlFYS3k2T2pmQ1R0aUFRPT0K"
+      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.2/z-biz-tool-aigen_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1JJUW5EV0FRZFRJbDlkeDlJOS9ad1c2d1RJUkwyeURHMUlNQlh2NGtJU2V1OHFQTURsdjRib1hINFQ1c2JicE5MWDh3UGVXSlRkd3dZeUZQblF0T1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMDIzCWZpbGU6ei1iaXotdG9vbC1haWdlbi5hcHAudGFyLmd6ClhZcUM2aW9TVXJqdTIwRllMY1pib1FuL2ZidTlBeWZYUG81UTFLUUk4bmlQUG1NN0JqUVZ4MzZmME9nbkVlQWVoSU5HeldkOEovZnhDWUp5ODAxV0JRPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.1/z-biz-tool-aigen_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1U4MGpOYklXR2svUkN1WkFpUDlKZnJvSkk4Z3U0b2N2TEJmK1RGai9VaGx5R0RDSlVLRU9KZjdpSXFFd0doaDRmTi9LdnVOYi80azZvU0x5ZXFMYmc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA4Njc4CWZpbGU6ei1iaXotdG9vbC1haWdlbi5hcHAudGFyLmd6CmZzRkVqYXIycWVybkozUzFtRTJMengwclhzalBoSjhhTno0ZmxESkcwSTNqYkZ6MmFneVAxMnpTc1ZOYkVRVTFOUDExcnk5N29BbGhqSnEralRoakF3PT0K"
+      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.2/z-biz-tool-aigen_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2ZGcGlLTHJvR2wyczQ4SVI0Y2lFNXZmazhFNC9iVXlSVUhvZzZ4WjBGN0VvUjN4R0xBNmtWSzdGM2RhbmZ4djBGVktzN1hteFhyK1dXTUQreGxWcUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMDQyCWZpbGU6ei1iaXotdG9vbC1haWdlbi5hcHAudGFyLmd6CnFIYWMvaUorczRHaTBjV1VOZGtrRjdCYTVTY1ZjelpSOWlTVkJtOXdMRms4cStVeGg2ckZzRDRFWFdLV3JVWGNUc1pLOTlZaEZNdVJ4VGF2YXVabERBPT0K"
     },
     "linux-x86_64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.1/z-biz-tool-aigen_0.2.1_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1R2RTdOdnpVQnBVa0Z3bGJuU2F2YnR3YXM4TkR2WVVVQnBXR3NnZlZoTDhIYmRuK1hiV2VOcERXemc5aVJ5d1hLdHh6cnlRYXZqaGpXeDZEd3RRZ2dBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA2ODk5CWZpbGU6ei1iaXotdG9vbC1haWdlbl8wLjIuMV9hbWQ2NC5BcHBJbWFnZQptQUFYK055RU5nQ0NhaXdXSEliSVNlYzZhaGo0aE51cmxaejRudGUrdXhpN3VGK3IwY1Z6V1hUNVRKSlRjS3J2dUZjVDAyVHB2Y3FMYUZMTHhMU2VBZz09Cg=="
+      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.2/z-biz-tool-aigen_0.2.2_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2Vkd01kS004RjcvQlhKbm5pcjZ3aGlkQ29sQk9HdUREN2dmM25QcVJhWGJvOU9nU2VtS3o5V1hSZ0RwbzhySjhZeWZZczAyN2J5cmlFQnVLOWdnbmc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMTU1CWZpbGU6ei1iaXotdG9vbC1haWdlbl8wLjIuMl9hbWQ2NC5BcHBJbWFnZQpKcDA2YkQvbUJvQmUwSmwzcVpYVnM4L3VmYlgvbnRsVHUzb1k3a2haT3JWd2RzRHo5bHRFR2pkZEtWQktOMTdzd04wTXN6L2JXbVdNR3dpR09OZWxCUT09Cg=="
     },
     "windows-x86_64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.1/z-biz-tool-aigen_0.2.1_x64_en-US.msi",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1RWZXNRSFpmbThQdUs3MW5DdEsxanNHc1ZZVWtQbEJiNXorMHMxemQxSS93eThpNDZacVZjbUc5OWd2bGZBMDhCMHkrWko3U1A5ODBDRzdYdFBvSVFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA2OTU3CWZpbGU6ei1iaXotdG9vbC1haWdlbl8wLjIuMV94NjRfZW4tVVMubXNpCndjNXRJRXBReTBhQVlwM2owM2VBQUNrSUJGRkpPVXJILzduYlczbnl1ZjlwUVVlNXNFZFAyMXZiZW1CSC8rWVVGaEt1alJiblhyWXJUdnBOeitaeEJnPT0K"
+      "url": "https://github.com/z-biz-tool/z-biz-tool-aigen/releases/download/v0.2.2/z-biz-tool-aigen_0.2.2_x64_en-US.msi",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1I2RFVWb3J2eDBUcW9hMjRZQVp2c0l4dDdZUUNKVGU5U09IOE1VM0VFWWRJUU5JV1BGYXZqT0NIbVNoUW9jZDRVcDZaejJYSTFQckxRdzY2R0FNandrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMDk5CWZpbGU6ei1iaXotdG9vbC1haWdlbl8wLjIuMl94NjRfZW4tVVMubXNpCm5KdSt4UkRyYWNkcEFMbDVZckNaTWVWYUY0MURieTdUVmcrZ3lRUjJWZVBibVNDVUxIOTEyaTVrRGZTZEtjUnNNVmFTNDVoMTU4cEhrdDBzVUw1SkRnPT0K"
     }
   }
 }
